@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Local UI test screenshots
+precut-*.png
+
+# Local media/cache folders if created during testing
+input/
+output/
+temp/

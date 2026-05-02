@@ -189,29 +189,6 @@ function css() {
       background: var(--blue);
       box-shadow: 0 0 10px rgba(108,165,255,.42);
     }
-    .precut-splitter.collapsed::before {
-      width: 0;
-      height: 0;
-      background: transparent;
-      box-shadow: none;
-      border-left: 7px solid transparent;
-      border-right: 7px solid transparent;
-      border-top: 8px solid var(--blue);
-      border-radius: 0;
-      transform: translate(calc(-50% - 7px), -45%);
-    }
-    .precut-splitter.collapsed::after {
-      content: "";
-      position: absolute;
-      left: 50%;
-      top: 50%;
-      width: 0;
-      height: 0;
-      border-left: 7px solid transparent;
-      border-right: 7px solid transparent;
-      border-top: 8px solid var(--blue);
-      transform: translate(calc(-50% + 7px), -45%);
-    }
     .precut-timeline {
       --in: 0%;
       --out: 100%;
@@ -927,9 +904,8 @@ app.registerExtension({
       root.style.setProperty("--precut-timeline-height", `${actualTimelineHeight}px`);
       root.style.setProperty("--precut-widget-height", `${height}px`);
       root.style.height = `${height}px`;
-      const previewCollapsed = videoHeight <= 8;
-      splitter.classList.toggle("collapsed", previewCollapsed);
-      splitter.title = previewCollapsed ? "Click to restore the preview" : "Drag to resize the timeline";
+      splitter.classList.remove("collapsed");
+      splitter.title = "Drag to resize the timeline";
       hidePrecutStateTextarea(root);
       widget.options.getMinHeight = () => minHeight;
       widget.options.getMaxHeight = () => Math.max(node._precutWidgetHeight || height, minHeight);
@@ -1406,14 +1382,20 @@ app.registerExtension({
     video.addEventListener("pause", updatePlayButton);
 
     let timelineResize = null;
-    function timelineHeightForSplitterCenter(clientY, pointerOffset = 0) {
+    function stopSplitterEvent(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+    }
+
+    function timelineHeightForSplitterCenter(clientY) {
       const rootRect = root.getBoundingClientRect();
       const controlsRect = controls.getBoundingClientRect();
       const styles = getComputedStyle(root);
       const gap = parseFloat(styles.rowGap || styles.gap || "0") || 0;
       const splitterCenter = Math.max(
         rootRect.top,
-        Math.min(controlsRect.top - 2 * gap - MIN_TIMELINE_HEIGHT - SPLITTER_HEIGHT / 2, clientY - pointerOffset)
+        Math.min(controlsRect.top - 2 * gap - MIN_TIMELINE_HEIGHT - SPLITTER_HEIGHT / 2, clientY)
       );
       const bottomAnchor = controlsRect.top - 2 * gap;
       return Math.max(
@@ -1421,33 +1403,28 @@ app.registerExtension({
         Math.min(MAX_TIMELINE_HEIGHT, bottomAnchor - splitterCenter - SPLITTER_HEIGHT / 2)
       );
     }
+    for (const eventName of ["mousedown", "click", "dblclick", "touchstart"]) {
+      splitter.addEventListener(eventName, stopSplitterEvent, true);
+    }
     splitter.addEventListener("pointerdown", (event) => {
-      if (splitter.classList.contains("collapsed")) {
-        node._precutTimelineHeight = DEFAULT_TIMELINE_HEIGHT;
-        syncWidgetSize();
-        render();
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
-      const splitterRect = splitter.getBoundingClientRect();
       timelineResize = {
         pointerId: event.pointerId,
-        pointerOffset: event.clientY - (splitterRect.top + splitterRect.height / 2),
       };
+      node._precutTimelineHeight = timelineHeightForSplitterCenter(event.clientY);
       splitter.classList.add("resizing");
       try {
         splitter.setPointerCapture?.(event.pointerId);
       } catch {}
-      event.preventDefault();
-      event.stopPropagation();
+      syncWidgetSize();
+      render();
+      stopSplitterEvent(event);
     });
     splitter.addEventListener("pointermove", (event) => {
       if (!timelineResize || timelineResize.pointerId !== event.pointerId) return;
-      node._precutTimelineHeight = timelineHeightForSplitterCenter(event.clientY, timelineResize.pointerOffset);
+      node._precutTimelineHeight = timelineHeightForSplitterCenter(event.clientY);
       syncWidgetSize();
       render();
-      event.preventDefault();
+      stopSplitterEvent(event);
     });
     splitter.addEventListener("pointerup", (event) => {
       if (timelineResize?.pointerId === event.pointerId) {
@@ -1457,11 +1434,13 @@ app.registerExtension({
           splitter.releasePointerCapture?.(event.pointerId);
         } catch {}
         syncWidgetSize();
+        stopSplitterEvent(event);
       }
     });
-    splitter.addEventListener("pointercancel", () => {
+    splitter.addEventListener("pointercancel", (event) => {
       timelineResize = null;
       splitter.classList.remove("resizing");
+      stopSplitterEvent(event);
     });
 
     firstBtn.addEventListener("dblclick", (event) => {

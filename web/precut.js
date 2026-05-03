@@ -79,6 +79,10 @@ function css() {
     .precut-ui.loaded {
       box-shadow: inset 0 0 0 1px rgba(123,217,140,.22);
     }
+    .precut-ui:focus,
+    .precut-ui:focus-visible {
+      outline: none;
+    }
     .precut-video {
       position: relative;
       width: 100%;
@@ -272,8 +276,8 @@ function css() {
     }
     .precut-handle.in { left: var(--in-label); top: var(--in-label-top); }
     .precut-handle.out {
-      left: auto;
-      right: calc(100% - var(--out));
+      left: var(--out-label);
+      right: auto;
       top: var(--out-label-top);
     }
     .precut-playhead {
@@ -368,10 +372,11 @@ function css() {
     .precut-navigator:hover ~ .precut-zoom-label { opacity: 1; }
     .precut-controls {
       display: flex;
-      flex: 0 0 auto;
+      flex: 0 0 ${CONTROLS_HEIGHT}px;
       align-items: center;
       justify-content: center;
       gap: 18px;
+      height: ${CONTROLS_HEIGHT}px;
       min-height: ${CONTROLS_HEIGHT}px;
       padding: 5px 8px;
       border: 1px solid #101214;
@@ -466,7 +471,8 @@ function css() {
       display: flex;
       align-items: center;
       gap: 8px;
-      flex: 0 0 auto;
+      flex: 0 0 34px;
+      height: 34px;
       min-width: 0;
       flex-wrap: nowrap;
       overflow: visible;
@@ -674,8 +680,31 @@ app.registerExtension({
     let dragging = null;
     let rangeDragOffset = 0;
     let navDragging = null;
+    let previousZoomState = null;
     let waveformPeaks = [];
     let pointerInside = false;
+
+    function resetPrecutCanvasDrag(event = null, force = false) {
+      const canvas = app.canvas || app.graph?.list_of_graphcanvas?.[0];
+      if (!canvas) return;
+      const noButtons =
+        !event ||
+        (event.buttons ?? 0) === 0 ||
+        event.type === "mouseup" ||
+        event.type === "pointerup" ||
+        event.type === "pointercancel" ||
+        event.type === "blur";
+      if (!force && !noButtons) return;
+
+      if (canvas.node_dragged === node) canvas.node_dragged = null;
+      if (canvas.dragging_node === node) canvas.dragging_node = null;
+      if (canvas.drag_node === node) canvas.drag_node = null;
+      if (noButtons) {
+        canvas.pointer_is_down = false;
+        canvas.dragging_canvas = false;
+        canvas.dragging_rectangle = null;
+      }
+    }
 
     const root = document.createElement("div");
     root.className = "precut-ui";
@@ -687,6 +716,12 @@ app.registerExtension({
     root.addEventListener("pointerleave", () => {
       pointerInside = false;
     });
+    for (const eventName of ["mousedown", "dblclick", "touchstart"]) {
+      root.addEventListener(eventName, (event) => {
+        event.stopPropagation();
+        event.stopImmediatePropagation?.();
+      });
+    }
 
     const videoWrap = document.createElement("div");
     videoWrap.className = "precut-video";
@@ -730,7 +765,7 @@ app.registerExtension({
         <div class="precut-nav-handle left"></div>
         <div class="precut-nav-handle right"></div>
       </div>
-      <div class="precut-zoom-label">Wheel = zoom</div>
+      <div class="precut-zoom-label">Wheel = zoom | Double-click bar = reset/restore</div>
     `;
     const timecodes = timeline.querySelector(".precut-timecodes");
     const waveCanvas = timeline.querySelector(".precut-wave");
@@ -821,7 +856,7 @@ app.registerExtension({
     }
 
     function fixedWidgetHeight(timelineValue = timelineHeight()) {
-      return 34 + timelineValue + CONTROLS_HEIGHT + SPLITTER_HEIGHT + 46;
+      return 34 + timelineValue + CONTROLS_HEIGHT + SPLITTER_HEIGHT + 48;
     }
 
     function minimumWidgetHeight() {
@@ -856,6 +891,7 @@ app.registerExtension({
     }
 
     let syncingSize = false;
+    let pendingSizeSync = false;
     function setNodeSize(width, height) {
       if (typeof node.setSize === "function") {
         node.setSize([width, height]);
@@ -865,43 +901,55 @@ app.registerExtension({
     }
 
     function syncWidgetSize() {
-      if (syncingSize) return;
-      syncingSize = true;
-      const width = Math.max(MIN_NODE_WIDTH, node.size?.[0] || MIN_NODE_WIDTH);
-      const minHeight = minimumWidgetHeight();
-      const availableHeight = Math.max(0, (node.size?.[1] || 0) - nodeChromeHeight());
-      const requestedHeight = availableHeight;
-      const height = Math.max(minHeight, requestedHeight);
-      const maxTimelineForHeight = Math.max(
-        MIN_TIMELINE_HEIGHT,
-        height - fixedWidgetHeight(0) - MIN_VIDEO_HEIGHT
-      );
-      const actualTimelineHeight = Math.max(
-        MIN_TIMELINE_HEIGHT,
-        Math.min(MAX_TIMELINE_HEIGHT, maxTimelineForHeight, node._precutTimelineHeight || DEFAULT_TIMELINE_HEIGHT)
-      );
-      node._precutTimelineHeight = actualTimelineHeight;
-      const videoHeight = Math.max(MIN_VIDEO_HEIGHT, height - fixedWidgetHeight(actualTimelineHeight));
-      node._precutWidgetHeight = height;
-      root.style.setProperty("--precut-video-height", `${videoHeight}px`);
-      root.style.setProperty("--precut-timeline-height", `${actualTimelineHeight}px`);
-      root.style.setProperty("--precut-widget-height", `${height}px`);
-      root.style.height = `${height}px`;
-      splitter.classList.remove("collapsed");
-      splitter.title = "Drag to resize the timeline";
-      hidePrecutStateTextarea(root);
-      widget.options.getMinHeight = () => minHeight;
-      widget.options.getMaxHeight = () => Math.max(node._precutWidgetHeight || height, minHeight);
-      widget.options.getHeight = () => node._precutWidgetHeight || height;
-      widget.computeSize = () => [width, node._precutWidgetHeight || height];
-      const minNodeHeight = Math.ceil(nodeChromeHeight() + minHeight);
-      if (node.size[0] !== width || node.size[1] < minNodeHeight) {
-        setNodeSize(width, Math.max(node.size?.[1] || 0, minNodeHeight));
+      if (syncingSize) {
+        pendingSizeSync = true;
+        return;
       }
-      node.setDirtyCanvas(true, true);
-      requestAnimationFrame(() => {
+      syncingSize = true;
+      try {
+        const width = Math.max(MIN_NODE_WIDTH, node.size?.[0] || MIN_NODE_WIDTH);
+        const minHeight = minimumWidgetHeight();
+        const chromeHeight = nodeChromeHeight();
+        const availableHeight = Math.max(0, (node.size?.[1] || 0) - chromeHeight);
+        const requestedHeight = availableHeight;
+        const height = Math.max(minHeight, requestedHeight);
+        const maxTimelineForHeight = Math.max(
+          MIN_TIMELINE_HEIGHT,
+          height - fixedWidgetHeight(0) - MIN_VIDEO_HEIGHT
+        );
+        const actualTimelineHeight = Math.max(
+          MIN_TIMELINE_HEIGHT,
+          Math.min(MAX_TIMELINE_HEIGHT, maxTimelineForHeight, node._precutTimelineHeight || DEFAULT_TIMELINE_HEIGHT)
+        );
+        node._precutTimelineHeight = actualTimelineHeight;
+        const videoHeight = Math.max(MIN_VIDEO_HEIGHT, height - fixedWidgetHeight(actualTimelineHeight));
+        node._precutWidgetHeight = height;
+        root.style.setProperty("--precut-video-height", `${videoHeight}px`);
+        root.style.setProperty("--precut-timeline-height", `${actualTimelineHeight}px`);
+        root.style.setProperty("--precut-widget-height", `${height}px`);
+        root.style.height = `${height}px`;
+        splitter.classList.remove("collapsed");
+        splitter.title = "Drag to resize the timeline";
+        hidePrecutStateTextarea(root);
+        widget.options.getMinHeight = () => minHeight;
+        widget.options.getMaxHeight = () => Math.max(node._precutWidgetHeight || height, minHeight);
+        widget.options.getHeight = () => node._precutWidgetHeight || height;
+        widget.computeSize = () => [width, node._precutWidgetHeight || height];
+        const minNodeHeight = Math.ceil(chromeHeight + minHeight);
+        if (node.size[0] !== width || node.size[1] < minNodeHeight) {
+          setNodeSize(width, Math.max(node.size?.[1] || 0, minNodeHeight));
+        }
+        node.setDirtyCanvas(true, true);
+      } finally {
         syncingSize = false;
-      });
+      }
+      if (pendingSizeSync) {
+        pendingSizeSync = false;
+        requestAnimationFrame(() => {
+          syncWidgetSize();
+          render();
+        });
+      }
     }
     node._precutSyncLayout = syncWidgetSize;
 
@@ -1057,6 +1105,19 @@ app.registerExtension({
       navWindow.style.width = `${Math.max(1, right - left)}%`;
       navLeft.style.left = `${left}%`;
       navRight.style.left = `${right}%`;
+    }
+
+    function toggleTimelineZoom() {
+      if (zoom > 1.0001) {
+        previousZoomState = { zoom, zoomCenter };
+        zoom = 1;
+        zoomCenter = 0.5;
+      } else if (previousZoomState) {
+        zoom = Math.max(1, Math.min(32, previousZoomState.zoom));
+        zoomCenter = Math.max(0, Math.min(1, previousZoomState.zoomCenter));
+        previousZoomState = null;
+      }
+      render();
     }
 
     function drawWaveform() {
@@ -1375,7 +1436,7 @@ app.registerExtension({
       const controlsRect = controls.getBoundingClientRect();
       const styles = getComputedStyle(root);
       const gap = parseFloat(styles.rowGap || styles.gap || "0") || 0;
-      const bottomAnchor = controlsRect.top - 2 * gap;
+      const bottomAnchor = controlsRect.top - gap;
       const maxForCurrentNode = Math.max(
         MIN_TIMELINE_HEIGHT,
         (node._precutWidgetHeight || minimumWidgetHeight()) - fixedWidgetHeight(0) - MIN_VIDEO_HEIGHT
@@ -1514,7 +1575,12 @@ app.registerExtension({
       rangeDragOffset = 0;
       navDragging = null;
       navigator.style.cursor = "grab";
+      resetPrecutCanvasDrag(null, true);
     });
+    window.addEventListener("pointerup", (event) => resetPrecutCanvasDrag(event, true), true);
+    window.addEventListener("pointercancel", (event) => resetPrecutCanvasDrag(event, true), true);
+    window.addEventListener("blur", (event) => resetPrecutCanvasDrag(event, true), true);
+    window.addEventListener("mousemove", (event) => resetPrecutCanvasDrag(event), true);
 
     function navFrameFromEvent(event) {
       const rect = navigator.getBoundingClientRect();
@@ -1523,6 +1589,11 @@ app.registerExtension({
     }
 
     navigator.addEventListener("mousedown", (event) => {
+      if (event.detail > 1) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       const [start, end] = visibleRange();
       const total = Math.max(1, state.frame_count - 1);
       const frame = navFrameFromEvent(event);
@@ -1543,6 +1614,13 @@ app.registerExtension({
       }
       event.preventDefault();
       event.stopPropagation();
+    });
+
+    navigator.addEventListener("dblclick", (event) => {
+      toggleTimelineZoom();
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
     });
 
     window.addEventListener("mousemove", (event) => {

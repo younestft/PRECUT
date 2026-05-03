@@ -306,7 +306,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "PRECUT": "PRECUT",
+    "PRECUT": "Media Cutter",
 }
 
 
@@ -315,7 +315,7 @@ class PRECUTV2(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="PRECUT",
-            display_name="PRECUT",
+            display_name="Media Cutter",
             category="PRECUT",
             description="Visually select IN and OUT points for video or audio media.",
             inputs=[

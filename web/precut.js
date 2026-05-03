@@ -15,11 +15,13 @@ const STATE_DEFAULT = {
 };
 
 const MIN_NODE_WIDTH = 620;
+const DEFAULT_NODE_WIDTH = 700;
+const DEFAULT_NODE_HEIGHT = 700;
 const VIDEO_TO_WIDGET_MARGIN = 210;
 const MIN_VIDEO_HEIGHT = 0;
 const MAX_VIDEO_HEIGHT = 340;
 const MIN_TIMELINE_HEIGHT = 96;
-const MAX_TIMELINE_HEIGHT = 1200;
+const MAX_TIMELINE_HEIGHT = 900;
 const DEFAULT_TIMELINE_HEIGHT = 132;
 const CONTROLS_HEIGHT = 48;
 const SPLITTER_HEIGHT = 8;
@@ -60,7 +62,7 @@ function css() {
       --precut-btn-size: 42px;
       width: 100%;
       height: var(--precut-widget-height, auto);
-      min-width: 520px;
+      min-width: ${MIN_NODE_WIDTH - 16}px;
       container-type: inline-size;
       display: flex;
       flex-direction: column;
@@ -375,7 +377,8 @@ function css() {
       border: 1px solid #101214;
       border-radius: 7px;
       background: linear-gradient(180deg, #242629, #181a1c);
-      overflow: hidden;
+      box-sizing: border-box;
+      overflow: visible;
     }
     .precut-control-group {
       display: flex;
@@ -397,6 +400,7 @@ function css() {
       min-width: 0;
       width: var(--precut-btn-size);
       height: var(--precut-btn-size);
+      flex: 0 0 var(--precut-btn-size);
       aspect-ratio: 1 / 1;
       border: 1px solid #44484d;
       border-radius: 7px;
@@ -405,6 +409,7 @@ function css() {
       cursor: pointer;
       transition: transform 90ms ease, filter 90ms ease, box-shadow 120ms ease, border-color 120ms ease;
       overflow: hidden;
+      box-sizing: border-box;
     }
     .precut-btn:hover {
       border-color: #5b6269;
@@ -429,6 +434,7 @@ function css() {
       font-weight: 800;
       line-height: 1;
       padding: 0;
+      box-sizing: border-box;
     }
     .precut-btn.mark:active,
     .precut-btn.loop:active {
@@ -463,7 +469,7 @@ function css() {
       flex: 0 0 auto;
       min-width: 0;
       flex-wrap: nowrap;
-      overflow: hidden;
+      overflow: visible;
     }
     .precut-video-actions .precut-btn {
       width: auto;
@@ -480,6 +486,7 @@ function css() {
       align-content: center;
       justify-content: center;
       white-space: nowrap;
+      box-sizing: border-box;
     }
     .precut-video-actions .precut-btn svg {
       width: 16px;
@@ -503,6 +510,7 @@ function css() {
       pointer-events: none;
       user-select: none;
       opacity: .72;
+      box-sizing: border-box;
     }
     .precut-logo-mark {
       width: 58px;
@@ -524,7 +532,8 @@ function css() {
       text-shadow: 0 1px 2px rgba(0,0,0,.75);
     }
     .precut-readout {
-      width: clamp(104px, 18cqw, 150px);
+      width: 128px;
+      flex: 0 0 128px;
       height: var(--precut-btn-size);
       display: grid;
       place-items: center;
@@ -538,53 +547,9 @@ function css() {
       line-height: 1;
       text-align: center;
       overflow: hidden;
+      box-sizing: border-box;
     }
-    .precut-file {
-      display: none;
-    }
-    @container (max-width: 560px) {
-      .precut-ui { gap: 7px; padding: 8px; }
-      .precut-video-actions { gap: 6px; }
-      .precut-video-actions .precut-btn {
-        min-width: 156px;
-        flex-basis: 156px;
-        width: 156px;
-        padding: 0 8px;
-        font-size: 10px;
-      }
-      .precut-ui {
-        --precut-btn-size: 42px;
-      }
-      .precut-logo {
-        width: 190px;
-        min-width: 190px;
-        flex-basis: 190px;
-        gap: 12px;
-      }
-      .precut-logo-mark {
-        width: 58px;
-      }
-      .precut-logo-text {
-        display: inline;
-        font-size: 23px;
-      }
-      .precut-control-group {
-        gap: 4px;
-      }
-      .precut-marker-controls {
-        margin-right: 6px;
-      }
-      .precut-right-controls {
-        margin-left: 6px;
-      }
-      .precut-btn.mark {
-        font-size: 13px;
-      }
-      .precut-readout {
-        width: 104px;
-        font-size: 13px;
-      }
-    }
+    .precut-file { display: none; }
   `;
   document.head.appendChild(style);
 }
@@ -689,12 +654,20 @@ app.registerExtension({
     if (node.comfyClass !== "PRECUT") return;
     css();
 
-    node.size = [Math.max(MIN_NODE_WIDTH, node.size?.[0] || 680), node.size?.[1] || 520];
     node.resizable = true;
     const stateWidget = node.widgets?.find((w) => w.name === "precut_state");
     setWidgetHidden(stateWidget);
 
     let state = readState(stateWidget);
+    const isFreshPrecutNode = !stateWidget?.value || stateWidget.value === "{}";
+    if (isFreshPrecutNode) {
+      node.size = [DEFAULT_NODE_WIDTH, DEFAULT_NODE_HEIGHT];
+    } else {
+      node.size = [
+        Math.max(MIN_NODE_WIDTH, node.size?.[0] || DEFAULT_NODE_WIDTH),
+        node.size?.[1] || DEFAULT_NODE_HEIGHT,
+      ];
+    }
     let zoom = 1;
     let zoomCenter = 0.5;
     let hoverFrame = 0;
@@ -841,7 +814,6 @@ app.registerExtension({
       getHeight: () => node._precutWidgetHeight || minimumWidgetHeight(),
     });
     node._precutWidget = widget;
-    node._precutTimelineHeight = DEFAULT_TIMELINE_HEIGHT;
     hidePrecutStateTextarea(root);
 
     function timelineHeight() {
@@ -855,6 +827,16 @@ app.registerExtension({
     function minimumWidgetHeight() {
       return MIN_VIDEO_HEIGHT + fixedWidgetHeight(MIN_TIMELINE_HEIGHT);
     }
+
+    node._precutTimelineHeight = isFreshPrecutNode
+      ? Math.max(
+          MIN_TIMELINE_HEIGHT,
+          Math.min(
+            MAX_TIMELINE_HEIGHT,
+            Math.round(((DEFAULT_NODE_HEIGHT - nodeChromeHeight()) - fixedWidgetHeight(0)) / 3)
+          )
+        )
+      : DEFAULT_TIMELINE_HEIGHT;
 
     function nodeChromeHeight() {
       const liteGraph = globalThis.LiteGraph;
@@ -898,6 +880,7 @@ app.registerExtension({
         MIN_TIMELINE_HEIGHT,
         Math.min(MAX_TIMELINE_HEIGHT, maxTimelineForHeight, node._precutTimelineHeight || DEFAULT_TIMELINE_HEIGHT)
       );
+      node._precutTimelineHeight = actualTimelineHeight;
       const videoHeight = Math.max(MIN_VIDEO_HEIGHT, height - fixedWidgetHeight(actualTimelineHeight));
       node._precutWidgetHeight = height;
       root.style.setProperty("--precut-video-height", `${videoHeight}px`);
@@ -1388,29 +1371,38 @@ app.registerExtension({
       event.stopImmediatePropagation?.();
     }
 
-    function timelineHeightForSplitterCenter(clientY) {
-      const rootRect = root.getBoundingClientRect();
+    function splitterMetrics() {
       const controlsRect = controls.getBoundingClientRect();
       const styles = getComputedStyle(root);
       const gap = parseFloat(styles.rowGap || styles.gap || "0") || 0;
-      const splitterCenter = Math.max(
-        rootRect.top,
-        Math.min(controlsRect.top - 2 * gap - MIN_TIMELINE_HEIGHT - SPLITTER_HEIGHT / 2, clientY)
-      );
       const bottomAnchor = controlsRect.top - 2 * gap;
+      const maxForCurrentNode = Math.max(
+        MIN_TIMELINE_HEIGHT,
+        (node._precutWidgetHeight || minimumWidgetHeight()) - fixedWidgetHeight(0) - MIN_VIDEO_HEIGHT
+      );
+      return {
+        bottomAnchor,
+        maxTimeline: Math.min(MAX_TIMELINE_HEIGHT, maxForCurrentNode),
+      };
+    }
+
+    function timelineHeightForSplitterCenter(clientY, metrics = splitterMetrics()) {
+      const requested = metrics.bottomAnchor - clientY - SPLITTER_HEIGHT / 2;
       return Math.max(
         MIN_TIMELINE_HEIGHT,
-        Math.min(MAX_TIMELINE_HEIGHT, bottomAnchor - splitterCenter - SPLITTER_HEIGHT / 2)
+        Math.min(metrics.maxTimeline, requested)
       );
     }
-    for (const eventName of ["mousedown", "click", "dblclick", "touchstart"]) {
+    for (const eventName of ["mousedown", "click", "dblclick", "touchstart", "touchmove"]) {
       splitter.addEventListener(eventName, stopSplitterEvent, true);
     }
     splitter.addEventListener("pointerdown", (event) => {
+      const metrics = splitterMetrics();
       timelineResize = {
         pointerId: event.pointerId,
+        metrics,
       };
-      node._precutTimelineHeight = timelineHeightForSplitterCenter(event.clientY);
+      node._precutTimelineHeight = timelineHeightForSplitterCenter(event.clientY, metrics);
       splitter.classList.add("resizing");
       try {
         splitter.setPointerCapture?.(event.pointerId);
@@ -1418,14 +1410,14 @@ app.registerExtension({
       syncWidgetSize();
       render();
       stopSplitterEvent(event);
-    });
+    }, true);
     splitter.addEventListener("pointermove", (event) => {
       if (!timelineResize || timelineResize.pointerId !== event.pointerId) return;
-      node._precutTimelineHeight = timelineHeightForSplitterCenter(event.clientY);
+      node._precutTimelineHeight = timelineHeightForSplitterCenter(event.clientY, timelineResize.metrics);
       syncWidgetSize();
       render();
       stopSplitterEvent(event);
-    });
+    }, true);
     splitter.addEventListener("pointerup", (event) => {
       if (timelineResize?.pointerId === event.pointerId) {
         timelineResize = null;

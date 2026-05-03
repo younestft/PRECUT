@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 74 40" role="img" aria-label="PRECUT logo mark">
+  <style>
+    .mark {
+      fill: #f4f7fb;
+      stroke: #f4f7fb;
+      filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.55));
+    }
+    @media (prefers-color-scheme: light) {
+      .mark {
+        fill: #202327;
+        stroke: #202327;
+      }
+    }
+  </style>
+  <path class="mark" d="M18 5H6v30h12" fill="none" stroke-width="5" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path class="mark" d="M56 5h12v30H56" fill="none" stroke-width="5" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path class="mark" d="M29 10v20l18-10-18-10Z" stroke="none"/>
+</svg>

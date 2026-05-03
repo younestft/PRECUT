@@ -4,6 +4,49 @@ PRECUT is a ComfyUI custom node pack for media editing utilities.
 
 The first node in the pack is **Media Cutter**: a visual video/audio trimmer with an interactive timeline, waveform, IN/OUT markers, playback controls, and separate `VIDEO`, `AUDIO`, and `DURATION` outputs.
 
+## Installation
+
+### Install with Git
+
+1. Open a terminal in your ComfyUI `custom_nodes` folder.
+
+   Portable Windows example:
+
+   ```bat
+   cd /d "E:\COMFY UI\ComfyUI\custom_nodes"
+   ```
+
+2. Clone PRECUT:
+
+   ```bat
+   git clone https://github.com/younestft/ComfyUI_PRECUT.git
+   ```
+
+3. Restart ComfyUI.
+
+4. In ComfyUI, right-click the graph and add:
+
+   ```text
+   PRECUT > Media Cutter
+   ```
+
+### Install Without Git
+
+1. Download the repo ZIP from GitHub.
+2. Extract it into:
+
+   ```text
+   ComfyUI/custom_nodes/ComfyUI_PRECUT
+   ```
+
+3. Restart ComfyUI.
+
+### Requirements
+
+- ComfyUI with Python 3.12 portable is supported.
+- FFmpeg is required for media probing, waveform generation, and audio extraction.
+- PRECUT will try to use FFmpeg from `imageio-ffmpeg`, system `PATH`, `PRECUT_FFMPEG_PATH`, or `VHS_FORCE_FFMPEG_PATH`.
+
 ## Media Cutter
 
 ### Video workflow

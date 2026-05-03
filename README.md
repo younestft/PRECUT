@@ -14,6 +14,30 @@ The first node in the pack is **Media Cutter**: a visual video/audio trimmer wit
 
 ![Media Cutter audio workflow](docs/images/media-cutter-audio-workflow.png)
 
+## What It Does
+
+- Loads video or audio from a connected ComfyUI input node.
+- Loads video or audio directly from disk into `ComfyUI/input/PRECUT/`.
+- Shows a visual timeline with waveform, timecodes, playhead, and draggable IN/OUT selection.
+- Trims connected `VIDEO` inputs and returns the trimmed video plus extracted audio.
+- Trims connected `AUDIO` inputs and returns the selected audio range.
+- Trims loaded media files and returns `VIDEO`, `AUDIO`, and the selected duration in seconds.
+- Supports resizing the node and timeline without pushing the controls out of place.
+- Keeps the node display name as **Media Cutter** under the `PRECUT` category.
+
+## Inputs
+
+- `video` optional `VIDEO`: connect a ComfyUI video source.
+- `audio` optional `AUDIO`: connect a ComfyUI audio source.
+
+Connect either `video` or `audio`, not both, when using connected media inputs.
+
+## Outputs
+
+- `VIDEO`: the selected video range, or `None` for audio-only media.
+- `AUDIO`: the selected audio range.
+- `DURATION`: selected IN-to-OUT duration as a float in seconds.
+
 ## Installation
 
 ### Install with Git
@@ -57,29 +81,6 @@ The first node in the pack is **Media Cutter**: a visual video/audio trimmer wit
 - FFmpeg is required for media probing, waveform generation, and audio extraction.
 - PRECUT will try to use FFmpeg from `imageio-ffmpeg`, system `PATH`, `PRECUT_FFMPEG_PATH`, or `VHS_FORCE_FFMPEG_PATH`.
 
-## What It Does
-
-- Loads video or audio from a connected ComfyUI input node.
-- Loads video or audio directly from disk into `ComfyUI/input/PRECUT/`.
-- Shows a visual timeline with waveform, timecodes, playhead, and draggable IN/OUT selection.
-- Trims connected `VIDEO` inputs and returns the trimmed video plus extracted audio.
-- Trims connected `AUDIO` inputs and returns the selected audio range.
-- Trims loaded media files and returns `VIDEO`, `AUDIO`, and the selected duration in seconds.
-- Supports resizing the node and timeline without pushing the controls out of place.
-- Keeps the node display name as **Media Cutter** under the `PRECUT` category.
-
-## Inputs
-
-- `video` optional `VIDEO`: connect a ComfyUI video source.
-- `audio` optional `AUDIO`: connect a ComfyUI audio source.
-
-Connect either `video` or `audio`, not both, when using connected media inputs.
-
-## Outputs
-
-- `VIDEO`: the selected video range, or `None` for audio-only media.
-- `AUDIO`: the selected audio range.
-- `DURATION`: selected IN-to-OUT duration as a float in seconds.
 
 ## Controls
 

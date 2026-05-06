@@ -14,8 +14,8 @@ const STATE_DEFAULT = {
   media_type: "video",
 };
 
-const MIN_NODE_WIDTH = 620;
-const DEFAULT_NODE_WIDTH = 700;
+const MIN_NODE_WIDTH = 640;
+const DEFAULT_NODE_WIDTH = MIN_NODE_WIDTH;
 const DEFAULT_NODE_HEIGHT = 700;
 const VIDEO_TO_WIDGET_MARGIN = 210;
 const MIN_VIDEO_HEIGHT = 0;
@@ -23,6 +23,8 @@ const MAX_VIDEO_HEIGHT = 340;
 const MIN_TIMELINE_HEIGHT = 96;
 const MAX_TIMELINE_HEIGHT = 900;
 const DEFAULT_TIMELINE_HEIGHT = 132;
+const MAX_ZOOM = 128;
+const MIN_NAV_WINDOW_WIDTH = 42;
 const CONTROLS_HEIGHT = 48;
 const SPLITTER_HEIGHT = 8;
 const FIXED_WIDGET_HEIGHT = 34 + DEFAULT_TIMELINE_HEIGHT + CONTROLS_HEIGHT + SPLITTER_HEIGHT + 46;
@@ -36,6 +38,8 @@ const icons = {
   next: `<svg viewBox="0 0 24 24"><path d="M9 17V7l7 5-7 5ZM5 7h2v10H5V7Z"/></svg>`,
   last: `<svg viewBox="0 0 24 24"><path d="M17 5h2v14h-2V5Zm-2 7-5 5v-4H5v-2h5V7l5 5Z"/></svg>`,
   loop: `<svg viewBox="0 0 24 24"><path d="M7 7h8.4l-2-2L15 3.4 20 8l-5 4.6-1.6-1.6 2-2H7a3 3 0 0 0 0 6h1v2H7A5 5 0 0 1 7 7Zm10 10H8.6l2 2L9 20.6 4 16l5-4.6 1.6 1.6-2 2H17a3 3 0 0 0 0-6h-1V7h1a5 5 0 0 1 0 10Z"/></svg>`,
+  fullscreen: `<svg viewBox="0 0 24 24"><path d="M5 5h6v2H7v4H5V5Zm12 2h-4V5h6v6h-2V7ZM7 13v4h4v2H5v-6h2Zm12 0v6h-6v-2h4v-4h2Z"/></svg>`,
+  fullscreenExit: `<svg viewBox="0 0 24 24"><path d="M5 11h14v2H5v-2Z"/></svg>`,
   inputArrow: `<svg viewBox="0 0 24 24"><path d="M20 17h-9a4 4 0 0 1-4-4V7.8l-3.1 3.1-1.4-1.4L8 4l5.5 5.5-1.4 1.4L9 7.8V13a2 2 0 0 0 2 2h9v2Z"/></svg>`,
   file: `<svg viewBox="0 0 24 24"><path d="M6 2h8l5 5v15H6V2Zm7 1.8V8h4.2L13 3.8ZM8 4v16h9V10h-6V4H8Z"/></svg>`,
   audio: `<svg viewBox="0 0 24 24"><path d="M9 18V6h10v8h-2V8h-6v10a3 3 0 1 1-2-2.83V18Zm-2 1a1 1 0 1 0 2 0 1 1 0 0 0-2 0Z"/></svg>`,
@@ -81,6 +85,27 @@ function css() {
     .precut-ui.loaded {
       box-shadow: inset 0 0 0 1px rgba(123,217,140,.22);
     }
+    .precut-ui.fullscreen {
+      position: fixed;
+      inset: 0;
+      z-index: 100000;
+      width: 100vw;
+      height: 100vh !important;
+      min-width: 0;
+      border-radius: 0;
+      padding: 12px;
+      gap: 10px;
+      box-shadow: none;
+      --precut-video-height: calc(100vh - var(--precut-timeline-height, 220px) - ${CONTROLS_HEIGHT}px - 112px);
+      --precut-timeline-height: clamp(150px, 25vh, 300px);
+      --precut-widget-height: 100vh;
+    }
+    .precut-fullscreen-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 99999;
+      background: #0b0c0d;
+    }
     .precut-ui:focus,
     .precut-ui:focus-visible {
       outline: none;
@@ -104,6 +129,29 @@ function css() {
       display: block;
       background: #090a0b;
     }
+    .precut-video video::-internal-media-controls-cast-button,
+    .precut-video video::-webkit-media-controls-cast-button,
+    .precut-video video::-webkit-media-controls-overlay-play-button {
+      display: none;
+    }
+    .precut-preview-speed {
+      position: absolute;
+      right: 18px;
+      bottom: 16px;
+      z-index: 8;
+      color: rgba(255,255,255,.92);
+      font-size: 28px;
+      font-weight: 650;
+      line-height: 1;
+      letter-spacing: 0;
+      text-shadow:
+        0 1px 2px rgba(0,0,0,.9),
+        0 0 4px rgba(0,0,0,.75);
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 120ms ease;
+    }
+    .precut-preview-speed.visible { opacity: 1; }
     .precut-progress {
       position: absolute;
       left: 12px;
@@ -330,8 +378,8 @@ function css() {
     }
     .precut-navigator {
       position: absolute;
-      left: 12px;
-      right: 12px;
+      left: 18px;
+      right: 18px;
       bottom: 0;
       height: 18px;
       overflow: visible;
@@ -346,6 +394,7 @@ function css() {
       position: absolute;
       left: 0;
       width: 100%;
+      min-width: ${MIN_NAV_WINDOW_WIDTH}px;
       top: 0;
       height: 100%;
       border-radius: 999px;
@@ -377,7 +426,7 @@ function css() {
       gap: 18px;
       height: ${CONTROLS_HEIGHT}px;
       min-height: ${CONTROLS_HEIGHT}px;
-      padding: 5px 8px;
+      padding: 5px 7px;
       border: 1px solid #101214;
       border-radius: 7px;
       background: linear-gradient(180deg, #242629, #181a1c);
@@ -511,6 +560,13 @@ function css() {
       font-size: 15px;
       font-weight: 850;
     }
+    .precut-video-actions .precut-fullscreen {
+      min-width: 34px;
+      width: 34px;
+      flex: 0 0 34px;
+      padding: 0;
+      border-radius: 999px;
+    }
     .precut-shortcuts-panel {
       position: absolute;
       left: 174px;
@@ -586,22 +642,77 @@ function css() {
       text-shadow: 0 1px 2px rgba(0,0,0,.75);
     }
     .precut-readout {
-      width: 128px;
-      flex: 0 0 128px;
+      width: 154px;
+      flex: 0 0 154px;
       height: var(--precut-btn-size);
       display: grid;
-      place-items: center;
+      grid-template-columns: 34px 92px;
+      grid-template-rows: 1fr 1fr;
+      column-gap: 8px;
+      row-gap: 0;
+      align-items: center;
+      padding: 3px 8px;
       border: 1px solid #4b4f55;
       border-radius: 7px;
       color: var(--blue);
       background: #16181a;
-      font-size: 15px;
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
       line-height: 1;
       text-align: center;
       overflow: hidden;
       box-sizing: border-box;
+      position: relative;
+    }
+    .precut-readout-label {
+      min-width: 0;
+      color: #aeb5bf;
+      font-size: 12px;
+      font-weight: 500;
+      line-height: 1;
+      text-align: left;
+    }
+    .precut-readout-label::after {
+      content: ":";
+      float: right;
+      color: #7f8791;
+      font-weight: 500;
+    }
+    .precut-readout-line {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 50%;
+      height: 1px;
+      background: rgba(255,255,255,.08);
+      pointer-events: none;
+    }
+    .precut-readout input,
+    .precut-range-readout {
+      width: 96px;
+      justify-self: end;
+      min-width: 0;
+      color: #b7bec8;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      text-align: right;
+    }
+    .precut-readout input {
+      border: 0;
+      outline: 0;
+      padding: 0;
+      background: transparent;
+    }
+    .precut-readout .precut-range-readout {
+      color: var(--yellow);
+      font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      user-select: none;
+      pointer-events: none;
     }
     .precut-file { display: none; }
   `;
@@ -618,6 +729,50 @@ function fmtTime(seconds, fps = 24) {
   const secs = totalSeconds % 60;
   const frames = totalFrames % nominalFps;
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}:${String(frames).padStart(2, "0")}`;
+}
+
+function parseTimecode(value, fps = 24) {
+  const nominalFps = Math.max(1, Math.round(Number.isFinite(fps) && fps > 0 ? fps : 24));
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const parts = raw.split(/[:;\s]+/).filter(Boolean).map((part) => Number.parseInt(part, 10));
+  if (parts.some((part) => !Number.isFinite(part) || part < 0)) return null;
+  if (parts.length === 1) return parts[0];
+  const [frames = 0, seconds = 0, minutes = 0, hours = 0] = parts.reverse();
+  return (((hours * 60 + minutes) * 60 + seconds) * nominalFps) + frames;
+}
+
+function formatTimecodeDigits(digits) {
+  const padded = String(digits || "").replace(/\D/g, "").slice(0, 8).padStart(8, "0");
+  return `${padded.slice(0, 2)}:${padded.slice(2, 4)}:${padded.slice(4, 6)}:${padded.slice(6, 8)}`;
+}
+
+function normalizeTimecodeInput(value) {
+  return formatTimecodeDigits(String(value || "").replace(/\D/g, ""));
+}
+
+const TIMECODE_PAIR_STARTS = [0, 3, 6, 9];
+
+function timecodePairFromSelection(start, end) {
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start === 0 && end >= 11) return -1;
+  const selectionStart = Math.min(start, end);
+  const selectionEnd = Math.max(start, end);
+  for (let index = 0; index < TIMECODE_PAIR_STARTS.length; index++) {
+    const pairStart = TIMECODE_PAIR_STARTS[index];
+    const pairEnd = pairStart + 2;
+    if (selectionStart >= pairStart && selectionEnd <= pairEnd && selectionEnd > selectionStart) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function timecodePairFromCaret(position) {
+  if (!Number.isFinite(position)) return 0;
+  if (position <= 2) return 0;
+  if (position <= 5) return 1;
+  if (position <= 8) return 2;
+  return 3;
 }
 
 function readState(widget) {
@@ -726,6 +881,17 @@ app.registerExtension({
     let pendingLayoutMarkCanvas = false;
     let pointerInside = false;
     let activePrecutDrag = false;
+    let fullscreenActive = false;
+    let fullscreenParent = null;
+    let fullscreenNextSibling = null;
+    let fullscreenBackdrop = null;
+    let fullscreenBodyOverflow = "";
+    let normalRootHeight = "";
+    let playheadEditDigits = "";
+    let playheadPairEditIndex = -1;
+    let playheadPairEditDigits = "";
+    let scrubAudioTimer = 0;
+    let scrubAudioToken = 0;
     let shuttleDirection = 0;
     let shuttleStep = 0;
     let reverseFrame = 0;
@@ -778,6 +944,10 @@ app.registerExtension({
     video.controls = false;
     video.muted = false;
     video.playsInline = true;
+    video.disableRemotePlayback = true;
+    video.setAttribute("disableRemotePlayback", "");
+    video.setAttribute("controlsList", "nodownload noremoteplayback");
+    video.setAttribute("x-webkit-airplay", "deny");
     const placeholder = document.createElement("div");
     placeholder.className = "precut-placeholder";
     function setPlaceholder(message, mode = "empty") {
@@ -793,12 +963,14 @@ app.registerExtension({
     progress.className = "precut-progress";
     const progressFill = document.createElement("span");
     progress.appendChild(progressFill);
+    const speedReadout = document.createElement("div");
+    speedReadout.className = "precut-preview-speed";
     const loadedCue = document.createElement("div");
     loadedCue.className = "precut-loaded-cue";
     loadedCue.textContent = "Loaded";
     const videoActions = document.createElement("div");
     videoActions.className = "precut-video-actions";
-    videoWrap.append(video, placeholder, videoActions, progress, loadedCue);
+    videoWrap.append(video, placeholder, videoActions, progress, speedReadout, loadedCue);
 
     const timeline = document.createElement("div");
     timeline.className = "precut-timeline";
@@ -837,9 +1009,9 @@ app.registerExtension({
     fileInput.accept = ".mp4,.mov,.mkv,.webm,.gif,.avi,.m4v,.mp3,.wav,.flac,.ogg,.m4a,.aac,.opus,video/*,audio/*";
 
     const firstBtn = makeButton("first", "Go to IN - Up arrow. Double-click: go to timeline start.", icons.first, () => seekFrame(state.in_frame));
-    const prevBtn = makeButton("prev", "Previous frame - Left arrow", icons.prev, () => seekFrame(currentFrame() - 1));
+    const prevBtn = makeButton("prev", "Previous frame - Left arrow", icons.prev, () => seekFrame(currentFrame() - 1, { scrubAudio: true }));
     const playBtn = makeButton("play", "Play / stop - Space", icons.play, () => togglePlay());
-    const nextBtn = makeButton("next", "Next frame - Right arrow", icons.next, () => seekFrame(currentFrame() + 1));
+    const nextBtn = makeButton("next", "Next frame - Right arrow", icons.next, () => seekFrame(currentFrame() + 1, { scrubAudio: true }));
     const lastBtn = makeButton("last", "Go to OUT - Down arrow. Double-click: go to timeline end.", icons.last, () => seekFrame(state.out_frame));
     const loadFileBtn = makeButton(
       "load precut-load",
@@ -856,12 +1028,30 @@ app.registerExtension({
     const helpBtn = makeButton("precut-help", "Shortcuts", "?", () => {
       shortcutsPanel.classList.toggle("open");
     });
+    const fullscreenBtn = makeButton("precut-fullscreen", "Fullscreen", icons.fullscreen, () => toggleFullscreen());
     const markInBtn = makeButton("mark mark-in", "Mark IN at playhead - I. Double-click: mark IN at first frame.", "IN", () => markIn());
     const markOutBtn = makeButton("mark mark-out", "Mark OUT at playhead - O. Double-click: mark OUT at last frame.", "OUT", () => markOut());
     const readout = document.createElement("div");
     readout.className = "precut-readout";
-    readout.title = "Selected IN to OUT duration";
-    const loopBtn = makeButton("loop", "Loop IN to OUT", icons.loop, () => toggleLoop());
+    readout.title = "Current playhead timecode. Type a timecode and press Enter to jump.";
+    const playheadInput = document.createElement("input");
+    playheadInput.className = "precut-playhead-timecode";
+    playheadInput.type = "text";
+    playheadInput.spellcheck = false;
+    playheadInput.inputMode = "numeric";
+    playheadInput.maxLength = 11;
+    const tcLabel = document.createElement("div");
+    tcLabel.className = "precut-readout-label";
+    tcLabel.textContent = "TC";
+    const ioLabel = document.createElement("div");
+    ioLabel.className = "precut-readout-label";
+    ioLabel.textContent = "I/O";
+    const divider = document.createElement("div");
+    divider.className = "precut-readout-line";
+    const rangeReadout = document.createElement("div");
+    rangeReadout.className = "precut-range-readout";
+    readout.append(tcLabel, playheadInput, divider, ioLabel, rangeReadout);
+    const loopBtn = makeButton("loop", "Loop IN to OUT - Shift", icons.loop, () => toggleLoop());
     const logo = document.createElement("div");
     logo.className = "precut-logo";
     logo.innerHTML = `
@@ -877,9 +1067,10 @@ app.registerExtension({
     shortcutsPanel.innerHTML = `
       <h4>Shortcuts</h4>
       <div><kbd>Space</kbd><span>Play / stop</span></div>
-      <div><kbd>J</kbd><span>Reverse 1x / 2x / 4x</span></div>
-      <div><kbd>K</kbd><span>Stop shuttle</span></div>
-      <div><kbd>L</kbd><span>Forward 1x / 2x / 4x</span></div>
+      <div><kbd>J</kbd><span>Reverse 1x / 2x / 4x / 8x</span></div>
+      <div><kbd>K</kbd><span>Stop shuttle / play</span></div>
+      <div><kbd>L</kbd><span>Forward 1x / 2x / 4x / 8x</span></div>
+      <div><kbd>Shift</kbd><span>Loop IN / OUT</span></div>
       <div><kbd>+</kbd><span>Zoom in at playhead</span></div>
       <div><kbd>-</kbd><span>Zoom out at playhead</span></div>
       <div><kbd>I / O</kbd><span>Mark IN / OUT</span></div>
@@ -888,7 +1079,7 @@ app.registerExtension({
       <div><kbd>Double Up / Down</kbd><span>Timeline start / end</span></div>
     `;
 
-    videoActions.append(loadInputsBtn, loadFileBtn, helpBtn, logo, fileInput);
+    videoActions.append(loadInputsBtn, loadFileBtn, helpBtn, fullscreenBtn, logo, fileInput);
     const markerControls = document.createElement("div");
     markerControls.className = "precut-control-group precut-marker-controls";
     const transportControls = document.createElement("div");
@@ -972,6 +1163,22 @@ app.registerExtension({
         pendingSizeSync = true;
         return;
       }
+      if (fullscreenActive) {
+        const maxTimelineForFullscreen = Math.max(150, window.innerHeight - 260);
+        const timelineValue = Math.max(
+          MIN_TIMELINE_HEIGHT,
+          Math.min(MAX_TIMELINE_HEIGHT, maxTimelineForFullscreen, node._precutTimelineHeight || Math.round(window.innerHeight * 0.25))
+        );
+        node._precutTimelineHeight = timelineValue;
+        root.style.setProperty("--precut-timeline-height", `${timelineValue}px`);
+        root.style.setProperty("--precut-video-height", `calc(100vh - ${timelineValue}px - ${CONTROLS_HEIGHT}px - 112px)`);
+        root.style.setProperty("--precut-widget-height", "100vh");
+        root.style.width = "100vw";
+        root.style.height = "100vh";
+        markWaveformDirty();
+        if (markCanvas) node.setDirtyCanvas(true, true);
+        return;
+      }
       syncingSize = true;
       try {
         const width = Math.max(MIN_NODE_WIDTH, node.size?.[0] || MIN_NODE_WIDTH);
@@ -1020,6 +1227,39 @@ app.registerExtension({
     }
     node._precutSyncLayout = syncWidgetSize;
 
+    function toggleFullscreen(force = null) {
+      fullscreenActive = force === null ? !fullscreenActive : Boolean(force);
+      if (fullscreenActive) {
+        fullscreenParent = root.parentNode;
+        fullscreenNextSibling = root.nextSibling;
+        fullscreenBodyOverflow = document.body.style.overflow;
+        normalRootHeight = root.style.height;
+        fullscreenBackdrop = document.createElement("div");
+        fullscreenBackdrop.className = "precut-fullscreen-backdrop";
+        document.body.append(fullscreenBackdrop, root);
+      } else if (fullscreenParent) {
+        fullscreenBackdrop?.remove();
+        fullscreenBackdrop = null;
+        fullscreenParent.insertBefore(root, fullscreenNextSibling);
+        fullscreenParent = null;
+        fullscreenNextSibling = null;
+        root.style.width = "";
+        root.style.height = normalRootHeight;
+      }
+      root.classList.toggle("fullscreen", fullscreenActive);
+      fullscreenBtn.innerHTML = fullscreenActive ? icons.fullscreenExit : icons.fullscreen;
+      fullscreenBtn.title = fullscreenActive ? "Exit fullscreen" : "Fullscreen";
+      document.body.style.overflow = fullscreenActive ? "hidden" : fullscreenBodyOverflow;
+      shortcutsPanel.classList.remove("open");
+      syncWidgetSize(false);
+      render();
+      if (fullscreenActive) {
+        root.requestFullscreen?.().catch?.(() => {});
+      } else if (document.fullscreenElement === root) {
+        document.exitFullscreen?.().catch?.(() => {});
+      }
+    }
+
     const originalOnResize = node.onResize;
     node.onResize = function () {
       originalOnResize?.apply(this, arguments);
@@ -1053,11 +1293,45 @@ app.registerExtension({
       updatePlayButton();
     }
 
-    function seekFrame(frame) {
+    function centerTimelineOnFrame(frame) {
+      const [start, end] = visibleRange();
+      const visible = end - start;
+      setVisibleRange(frame - visible / 2, frame + visible / 2);
+      markWaveformDirty();
+    }
+
+    function seekFrame(frame, options = {}) {
       frame = Math.max(0, Math.min(state.frame_count - 1, Math.round(frame)));
       video.currentTime = frameToSeconds(frame);
-      ensurePlayheadVisible();
+      if (options.center) centerTimelineOnFrame(frame);
+      else ensurePlayheadVisible();
       render();
+      if (options.scrubAudio) playFrameAudio(frame);
+    }
+
+    function playFrameAudio(frame) {
+      if (!state.video_url || !Number.isFinite(video.duration) || state.media_type === "inputs") return;
+      const token = scrubAudioToken + 1;
+      scrubAudioToken = token;
+      clearTimeout(scrubAudioTimer);
+      const wasPaused = video.paused;
+      const rate = video.playbackRate;
+      video.playbackRate = 1;
+      video.currentTime = frameToSeconds(frame);
+      const stopAt = Math.min(duration(), frameToSeconds(frame + 1.5));
+      const stop = () => {
+        if (scrubAudioToken !== token) return;
+        video.pause();
+        video.playbackRate = rate || 1;
+        video.currentTime = frameToSeconds(frame);
+        if (!wasPaused) video.play();
+        render();
+      };
+      video.play().then(() => {
+        scrubAudioTimer = setTimeout(stop, Math.max(28, ((stopAt - video.currentTime) * 1000) || 42));
+      }).catch(() => {
+        video.playbackRate = rate || 1;
+      });
     }
 
     function markIn() {
@@ -1109,7 +1383,7 @@ app.registerExtension({
 
     function setVisibleRange(start, end) {
       const total = Math.max(1, state.frame_count - 1);
-      const minVisible = Math.max(1, Math.round(total / 32));
+      const minVisible = Math.max(1, Math.round(total / MAX_ZOOM));
       start = Math.max(0, Math.min(total - minVisible, start));
       end = Math.max(start + minVisible, Math.min(total, end));
       if (end > total) {
@@ -1117,7 +1391,7 @@ app.registerExtension({
         end = total;
       }
       const visible = Math.max(1, end - start);
-      zoom = Math.max(1, Math.min(32, total / visible));
+      zoom = Math.max(1, Math.min(MAX_ZOOM, total / visible));
       zoomCenter = Math.max(0, Math.min(1, (start + visible / 2) / total));
     }
 
@@ -1132,10 +1406,27 @@ app.registerExtension({
     function zoomTimeline(direction) {
       const playheadFrame = currentFrame();
       const factor = direction > 0 ? 1.18 : 1 / 1.18;
-      zoom = Math.max(1, Math.min(32, zoom * factor));
+      zoom = Math.max(1, Math.min(MAX_ZOOM, zoom * factor));
       zoomCenter = Math.max(0, Math.min(1, playheadFrame / Math.max(1, state.frame_count - 1)));
       markWaveformDirty();
       scheduleRender();
+    }
+
+    function panTimelineAtEdge(event) {
+      const rect = timeline.getBoundingClientRect();
+      const [start, end] = visibleRange();
+      const visible = end - start;
+      const framesPerPixel = visible / Math.max(1, rect.width);
+      const edgeSize = Math.max(36, Math.min(120, rect.width * 0.12));
+      let pixels = 0;
+      if (event.clientX < rect.left + edgeSize) {
+        pixels = event.clientX - (rect.left + edgeSize);
+      } else if (event.clientX > rect.right - edgeSize) {
+        pixels = event.clientX - (rect.right - edgeSize);
+      }
+      if (!pixels) return;
+      setVisibleRange(start + pixels * framesPerPixel, end + pixels * framesPerPixel);
+      markWaveformDirty();
     }
 
     function doublePressArrow(key) {
@@ -1232,12 +1523,18 @@ app.registerExtension({
     function renderNavigator() {
       const total = Math.max(1, state.frame_count - 1);
       const [start, end] = visibleRange();
-      const left = (start / total) * 100;
-      const right = (end / total) * 100;
-      navWindow.style.left = `${left}%`;
-      navWindow.style.width = `${Math.max(1, right - left)}%`;
-      navLeft.style.left = `${left}%`;
-      navRight.style.left = `${right}%`;
+      const rect = navigator.getBoundingClientRect();
+      const width = Math.max(1, rect.width);
+      const leftPx = (start / total) * width;
+      const rightPx = (end / total) * width;
+      const actualWidth = Math.max(1, rightPx - leftPx);
+      const visualWidth = Math.min(width, Math.max(MIN_NAV_WINDOW_WIDTH, actualWidth));
+      const centerPx = (leftPx + rightPx) / 2;
+      const visualLeft = Math.max(0, Math.min(width - visualWidth, centerPx - visualWidth / 2));
+      navWindow.style.left = `${visualLeft}px`;
+      navWindow.style.width = `${visualWidth}px`;
+      navLeft.style.left = `${visualLeft}px`;
+      navRight.style.left = `${visualLeft + visualWidth}px`;
     }
 
     function toggleTimelineZoom() {
@@ -1246,7 +1543,7 @@ app.registerExtension({
         zoom = 1;
         zoomCenter = 0.5;
       } else if (previousZoomState) {
-        zoom = Math.max(1, Math.min(32, previousZoomState.zoom));
+        zoom = Math.max(1, Math.min(MAX_ZOOM, previousZoomState.zoom));
         zoomCenter = Math.max(0, Math.min(1, previousZoomState.zoomCenter));
         previousZoomState = null;
       }
@@ -1378,7 +1675,13 @@ app.registerExtension({
       timeline.style.setProperty("--in-label-top", "28px");
       timeline.style.setProperty("--out-label-top", "calc(100% - 50px)");
       timeline.style.setProperty("--playhead", `${headPct}%`);
-      readout.textContent = fmtTime((state.out_frame - state.in_frame + 1) / state.fps, state.fps);
+      if (document.activeElement !== playheadInput) {
+        playheadInput.value = fmtTime(frameToSeconds(currentFrame()), state.fps);
+      }
+      const speed = shuttleDirection ? [1, 2, 4, 8][shuttleStep] : (video.paused ? 1 : video.playbackRate || 1);
+      speedReadout.textContent = `${speed}x`;
+      speedReadout.classList.toggle("visible", speed > 1);
+      rangeReadout.textContent = fmtTime((state.out_frame - state.in_frame + 1) / state.fps, state.fps);
       const audioOnly = state.media_type === "audio";
       placeholder.style.display = state.video_url && !audioOnly ? "none" : "flex";
       video.style.opacity = audioOnly ? "0" : "1";
@@ -1569,6 +1872,10 @@ app.registerExtension({
 
     function togglePlay() {
       if (!state.video_url) return;
+      if (shuttleDirection) {
+        stopShuttle();
+        return;
+      }
       shuttleDirection = 0;
       shuttleStep = 0;
       reverseFrame += 1;
@@ -1583,27 +1890,28 @@ app.registerExtension({
     function shuttleForward() {
       if (!state.video_url) return;
       if (shuttleDirection === 1) {
-        shuttleStep = Math.min(2, shuttleStep + 1);
+        shuttleStep = Math.min(3, shuttleStep + 1);
       } else {
         shuttleDirection = 1;
         shuttleStep = 0;
       }
       reverseFrame += 1;
-      video.playbackRate = [1, 2, 4][shuttleStep];
+      video.playbackRate = [1, 2, 4, 8][shuttleStep];
       video.play();
       updatePlayButton();
+      render();
     }
 
     function shuttleReverse() {
       if (!state.video_url) return;
       if (shuttleDirection === -1) {
-        shuttleStep = Math.min(2, shuttleStep + 1);
+        shuttleStep = Math.min(3, shuttleStep + 1);
       } else {
         shuttleDirection = -1;
         shuttleStep = 0;
       }
       video.pause();
-      const speed = [1, 2, 4][shuttleStep];
+      const speed = [1, 2, 4, 8][shuttleStep];
       const token = reverseFrame + 1;
       reverseFrame = token;
       reverseLastTime = performance.now();
@@ -1623,6 +1931,7 @@ app.registerExtension({
       };
       requestAnimationFrame(step);
       updatePlayButton();
+      render();
     }
 
     function toggleLoop() {
@@ -1640,6 +1949,7 @@ app.registerExtension({
       const playing = !video.paused;
       playBtn.innerHTML = playing ? icons.stop : icons.play;
       playBtn.title = playing ? "Stop - Space" : "Play - Space";
+      scheduleRender();
     }
 
     fileInput.addEventListener("change", async () => {
@@ -1676,10 +1986,12 @@ app.registerExtension({
     }
 
     function splitterMetrics() {
-      const maxForCurrentNode = Math.max(
-        MIN_TIMELINE_HEIGHT,
-        (node._precutWidgetHeight || minimumWidgetHeight()) - fixedWidgetHeight(0) - MIN_VIDEO_HEIGHT
-      );
+      const maxForCurrentNode = fullscreenActive
+        ? Math.max(MIN_TIMELINE_HEIGHT, window.innerHeight - 260)
+        : Math.max(
+            MIN_TIMELINE_HEIGHT,
+            (node._precutWidgetHeight || minimumWidgetHeight()) - fixedWidgetHeight(0) - MIN_VIDEO_HEIGHT
+          );
       return {
         maxTimeline: Math.min(MAX_TIMELINE_HEIGHT, maxForCurrentNode),
       };
@@ -1758,6 +2070,97 @@ app.registerExtension({
       markOutAtEnd();
     });
 
+    function snapPlayheadTimecodeSelection() {
+      if (document.activeElement !== playheadInput) return;
+      const start = playheadInput.selectionStart ?? 0;
+      const end = playheadInput.selectionEnd ?? start;
+      if (start === 0 && end >= playheadInput.value.length) return;
+      const pairIndex = start === end
+        ? timecodePairFromCaret(start)
+        : Math.max(0, timecodePairFromSelection(start, end));
+      const pairStart = TIMECODE_PAIR_STARTS[pairIndex >= 0 ? pairIndex : timecodePairFromCaret(start)];
+      if (start === pairStart && end === pairStart + 2) return;
+      playheadInput.setSelectionRange(pairStart, pairStart + 2);
+    }
+
+    playheadInput.addEventListener("keydown", (event) => {
+      if (/^\d$/.test(event.key)) {
+        const allSelected = playheadInput.selectionStart === 0 && playheadInput.selectionEnd >= playheadInput.value.length;
+        const pairIndex = timecodePairFromSelection(playheadInput.selectionStart, playheadInput.selectionEnd);
+        if (!allSelected && pairIndex >= 0) {
+          if (playheadPairEditIndex !== pairIndex) {
+            playheadPairEditIndex = pairIndex;
+            playheadPairEditDigits = "";
+          }
+          playheadPairEditDigits = (playheadPairEditDigits + event.key).slice(-2);
+          const digits = playheadInput.value.replace(/\D/g, "").padStart(8, "0").slice(0, 8).split("");
+          const pairValue = playheadPairEditDigits.length === 1 ? `0${playheadPairEditDigits}` : playheadPairEditDigits;
+          digits[pairIndex * 2] = pairValue[0];
+          digits[pairIndex * 2 + 1] = pairValue[1];
+          playheadInput.value = formatTimecodeDigits(digits.join(""));
+          if (playheadPairEditDigits.length >= 2) {
+            playheadPairEditIndex = -1;
+            playheadPairEditDigits = "";
+            const nextPair = Math.min(TIMECODE_PAIR_STARTS.length - 1, pairIndex + 1);
+            const nextStart = TIMECODE_PAIR_STARTS[nextPair];
+            playheadInput.setSelectionRange(nextStart, nextStart + 2);
+          } else {
+            const start = TIMECODE_PAIR_STARTS[pairIndex];
+            playheadInput.setSelectionRange(start, start + 2);
+          }
+        } else {
+          playheadPairEditIndex = -1;
+          playheadPairEditDigits = "";
+          playheadEditDigits = (playheadEditDigits + event.key).slice(0, 8);
+          playheadInput.value = formatTimecodeDigits(playheadEditDigits);
+          playheadInput.setSelectionRange(playheadInput.value.length, playheadInput.value.length);
+        }
+        event.preventDefault();
+        event.stopPropagation();
+      } else if (event.key === "Backspace") {
+        playheadPairEditIndex = -1;
+        playheadPairEditDigits = "";
+        playheadEditDigits = playheadEditDigits.slice(0, -1);
+        playheadInput.value = formatTimecodeDigits(playheadEditDigits);
+        playheadInput.setSelectionRange(playheadInput.value.length, playheadInput.value.length);
+        event.preventDefault();
+        event.stopPropagation();
+      } else if (event.key === "Enter") {
+        const frame = parseTimecode(playheadInput.value, state.fps);
+        if (frame !== null) seekFrame(frame, { center: true });
+        playheadInput.blur();
+        event.preventDefault();
+        event.stopPropagation();
+      } else if (event.key === "Escape") {
+        playheadInput.value = fmtTime(frameToSeconds(currentFrame()), state.fps);
+        playheadInput.blur();
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    });
+    playheadInput.addEventListener("input", () => {
+      playheadPairEditIndex = -1;
+      playheadPairEditDigits = "";
+      playheadEditDigits = playheadInput.value.replace(/\D/g, "").slice(0, 8);
+      playheadInput.value = formatTimecodeDigits(playheadEditDigits);
+      playheadInput.setSelectionRange(playheadInput.value.length, playheadInput.value.length);
+    });
+    playheadInput.addEventListener("mousedown", (event) => event.stopPropagation());
+    playheadInput.addEventListener("mouseup", () => setTimeout(snapPlayheadTimecodeSelection, 0));
+    playheadInput.addEventListener("click", () => setTimeout(snapPlayheadTimecodeSelection, 0));
+    playheadInput.addEventListener("select", () => setTimeout(snapPlayheadTimecodeSelection, 0));
+    playheadInput.addEventListener("keyup", (event) => {
+      if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+        snapPlayheadTimecodeSelection();
+      }
+    });
+    playheadInput.addEventListener("focus", () => {
+      playheadEditDigits = "";
+      playheadPairEditIndex = -1;
+      playheadPairEditDigits = "";
+      playheadInput.select();
+    });
+
     timeline.addEventListener("mousemove", (event) => {
       hoverFrame = frameFromEvent(event);
       if (dragging === "in") {
@@ -1769,6 +2172,8 @@ app.registerExtension({
         if (state.in_frame > hoverFrame) state.in_frame = hoverFrame;
         persist();
       } else if (dragging === "playhead") {
+        panTimelineAtEdge(event);
+        hoverFrame = frameFromEvent(event);
         seekFrame(hoverFrame);
       } else if (dragging === "range") {
         const length = state.out_frame - state.in_frame;
@@ -1924,7 +2329,7 @@ app.registerExtension({
       if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
 
       const key = event.key.toLowerCase();
-      const handled = ["i", "o", "j", "k", "l", "+", "=", "-", "_", "arrowdown", "arrowup", "arrowleft", "arrowright"].includes(key) || event.code === "Space";
+      const handled = ["i", "o", "j", "k", "l", "+", "=", "-", "_", "shift", "escape", "arrowdown", "arrowup", "arrowleft", "arrowright"].includes(key) || event.code === "Space";
       if (handled) {
         event.preventDefault();
         event.stopPropagation();
@@ -1935,16 +2340,20 @@ app.registerExtension({
         markIn();
       } else if (key === "o") {
         markOut();
+      } else if (event.key === "Escape" && fullscreenActive) {
+        toggleFullscreen(false);
+      } else if (event.key === "Shift" && !event.repeat) {
+        toggleLoop();
       } else if (event.key === "ArrowDown") {
         seekFrame(doublePressArrow("down") ? state.frame_count - 1 : state.out_frame);
       } else if (event.key === "ArrowUp") {
         seekFrame(doublePressArrow("up") ? 0 : state.in_frame);
       } else if (event.key === "ArrowLeft") {
         lastArrowJumpKey = "";
-        seekFrame(currentFrame() - 1);
+        seekFrame(currentFrame() - 1, { scrubAudio: true });
       } else if (event.key === "ArrowRight") {
         lastArrowJumpKey = "";
-        seekFrame(currentFrame() + 1);
+        seekFrame(currentFrame() + 1, { scrubAudio: true });
       } else if (event.code === "Space") {
         togglePlay();
       } else if (key === "+" || key === "=") {
@@ -1954,7 +2363,7 @@ app.registerExtension({
       } else if (key === "j") {
         shuttleReverse();
       } else if (key === "k") {
-        stopShuttle();
+        togglePlay();
       } else if (key === "l") {
         shuttleForward();
       }
@@ -1968,6 +2377,16 @@ app.registerExtension({
       markWaveformDirty();
       scheduleRender();
     }).observe(root);
+    window.addEventListener("resize", () => {
+      if (!fullscreenActive) return;
+      syncWidgetSize(false);
+      scheduleRender();
+    });
+    document.addEventListener("fullscreenchange", () => {
+      if (fullscreenActive && document.fullscreenElement !== root) {
+        toggleFullscreen(false);
+      }
+    });
     node.setDirtyCanvas(true, true);
   },
 });

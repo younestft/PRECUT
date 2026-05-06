@@ -6,13 +6,13 @@ The first node in the pack is **Media Cutter**: a visual video/audio trimmer wit
 
 ## Media Cutter
 
-### Video workflow
+### Video
 
-![Media Cutter video workflow](docs/images/media-cutter-video-workflow.png)
+![Media Cutter video](docs/images/media-cutter-video.png)
 
-### Audio workflow
+### Audio
 
-![Media Cutter audio workflow](docs/images/media-cutter-audio-workflow.png)
+![Media Cutter audio](docs/images/media-cutter-audio.png)
 
 ## What It Does
 

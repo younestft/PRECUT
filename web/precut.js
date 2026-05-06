@@ -57,6 +57,7 @@ function css() {
       --text: #e7e9ed;
       --muted: #a7adb6;
       --blue: #6ca5ff;
+      --playhead-color: #f2f4f7;
       --wave: #77a8ff;
       --yellow: #ffbd3e;
       --precut-btn-size: 42px;
@@ -75,6 +76,7 @@ function css() {
       box-sizing: border-box;
       font-family: Inter, ui-sans-serif, system-ui, "Segoe UI", sans-serif;
       overflow: hidden;
+      position: relative;
     }
     .precut-ui.loaded {
       box-shadow: inset 0 0 0 1px rgba(123,217,140,.22);
@@ -215,6 +217,18 @@ function css() {
       cursor: ew-resize;
       user-select: none;
     }
+    .precut-timeline::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 28px;
+      height: 1px;
+      background: rgba(255,255,255,.08);
+      box-shadow: 0 1px 0 rgba(0,0,0,.35);
+      pointer-events: none;
+      z-index: 4;
+    }
     .precut-timecodes {
       position: absolute;
       inset: 2px 0 auto;
@@ -224,6 +238,7 @@ function css() {
       align-items: center;
       color: #9ea4ac;
       font-size: 12px;
+      background: rgba(255,255,255,.018);
       pointer-events: none;
       z-index: 4;
       text-align: center;
@@ -298,7 +313,7 @@ function css() {
       left: 50%;
       border-left: 6px solid transparent;
       border-right: 6px solid transparent;
-      border-top: 9px solid var(--blue);
+      border-top: 9px solid var(--playhead-color);
       transform: translate(-50%, -100%);
     }
     .precut-playhead::after {
@@ -309,8 +324,8 @@ function css() {
       bottom: 5px;
       width: 3px;
       border-radius: 999px;
-      background: linear-gradient(180deg, #72aaff, var(--blue));
-      box-shadow: 0 0 8px rgba(108,165,255,.55);
+      background: linear-gradient(180deg, #ffffff, var(--playhead-color));
+      box-shadow: 0 0 8px rgba(242,244,247,.5);
       transform: translateX(-50%);
     }
     .precut-navigator {
@@ -354,22 +369,6 @@ function css() {
       left: 0;
       transform: translateX(-50%);
     }
-    .precut-zoom-label {
-      position: absolute;
-      right: 10px;
-      top: 31px;
-      color: #ffd35a;
-      background: rgba(17,19,21,.86);
-      border: 1px solid rgba(255,211,90,.38);
-      border-radius: 5px;
-      padding: 4px 7px;
-      font-size: 11px;
-      opacity: 0;
-      transition: opacity 140ms ease;
-      pointer-events: none;
-      z-index: 7;
-    }
-    .precut-navigator:hover ~ .precut-zoom-label { opacity: 1; }
     .precut-controls {
       display: flex;
       flex: 0 0 ${CONTROLS_HEIGHT}px;
@@ -419,6 +418,11 @@ function css() {
     .precut-btn:hover {
       border-color: #5b6269;
       filter: brightness(1.04);
+    }
+    .precut-btn:focus,
+    .precut-btn:focus-visible {
+      outline: none;
+      box-shadow: none;
     }
     .precut-btn:active {
       transform: translateY(1px) scale(.985);
@@ -498,6 +502,50 @@ function css() {
       width: 16px;
       height: 16px;
     }
+    .precut-video-actions .precut-help {
+      min-width: 34px;
+      width: 34px;
+      flex: 0 0 34px;
+      padding: 0;
+      border-radius: 999px;
+      font-size: 15px;
+      font-weight: 850;
+    }
+    .precut-shortcuts-panel {
+      position: absolute;
+      left: 174px;
+      top: 48px;
+      width: 300px;
+      padding: 10px 12px;
+      border: 1px solid rgba(255,255,255,.18);
+      border-radius: 7px;
+      background: rgba(18,20,22,.96);
+      box-shadow: 0 10px 24px rgba(0,0,0,.45);
+      color: var(--text);
+      font-size: 12px;
+      z-index: 20;
+      display: none;
+      pointer-events: auto;
+    }
+    .precut-shortcuts-panel.open { display: block; }
+    .precut-shortcuts-panel h4 {
+      margin: 0 0 8px;
+      font-size: 12px;
+      color: #f2f4f7;
+    }
+    .precut-shortcuts-panel div {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 3px 0;
+      color: var(--muted);
+    }
+    .precut-shortcuts-panel kbd {
+      color: var(--yellow);
+      font: inherit;
+      font-weight: 800;
+      white-space: nowrap;
+    }
     .precut-logo {
       margin-left: auto;
       height: 34px;
@@ -562,11 +610,13 @@ function css() {
 
 function fmtTime(seconds, fps = 24) {
   if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
-  const totalSeconds = Math.floor(seconds);
+  const nominalFps = Math.max(1, Math.round(Number.isFinite(fps) && fps > 0 ? fps : 24));
+  const totalFrames = Math.max(0, Math.round(seconds * (Number.isFinite(fps) && fps > 0 ? fps : nominalFps)));
+  const totalSeconds = Math.floor(totalFrames / nominalFps);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const secs = totalSeconds % 60;
-  const frames = Math.floor((seconds - totalSeconds) * fps);
+  const frames = totalFrames % nominalFps;
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}:${String(frames).padStart(2, "0")}`;
 }
 
@@ -603,34 +653,16 @@ function setWidgetHidden(widget) {
   }
 }
 
-function hidePrecutStateTextarea(root) {
-  const scope = root?.closest?.(".isolate") || root?.parentElement?.parentElement || root?.parentElement;
-  if (!scope) return;
-  for (const textarea of scope.querySelectorAll("textarea.comfy-multiline-input")) {
-    if (root.contains(textarea)) continue;
-    const holder = textarea.closest(".dom-widget") || textarea.parentElement;
-    for (const element of [textarea, holder]) {
-      if (!element?.style) continue;
-      element.style.display = "none";
-      element.style.height = "0";
-      element.style.minHeight = "0";
-      element.style.maxHeight = "0";
-      element.style.margin = "0";
-      element.style.padding = "0";
-      element.style.border = "0";
-      element.style.overflow = "hidden";
-      element.style.pointerEvents = "none";
-    }
-  }
-}
-
 function makeButton(className, title, icon, onClick) {
   const btn = document.createElement("button");
   btn.className = `precut-btn ${className || ""}`.trim();
   btn.type = "button";
   btn.title = title;
   btn.innerHTML = icon;
-  btn.addEventListener("click", onClick);
+  btn.addEventListener("click", (event) => {
+    onClick(event);
+    btn.blur();
+  });
   return btn;
 }
 
@@ -679,12 +711,30 @@ app.registerExtension({
     let hoverFrame = 0;
     let dragging = null;
     let rangeDragOffset = 0;
+    let timelinePan = null;
     let navDragging = null;
     let previousZoomState = null;
     let waveformPeaks = [];
+    let waveformVersion = 0;
+    let lastWaveformKey = "";
+    let pendingWaveformKey = "";
+    let pendingWaveformFrame = 0;
+    let waveformDirty = true;
+    let lastTimecodesKey = "";
+    let pendingRenderFrame = 0;
+    let pendingLayoutFrame = 0;
+    let pendingLayoutMarkCanvas = false;
     let pointerInside = false;
+    let activePrecutDrag = false;
+    let shuttleDirection = 0;
+    let shuttleStep = 0;
+    let reverseFrame = 0;
+    let reverseLastTime = 0;
+    let lastArrowJumpKey = "";
+    let lastArrowJumpTime = 0;
 
     function resetPrecutCanvasDrag(event = null, force = false) {
+      if (!activePrecutDrag && !force) return;
       const canvas = app.canvas || app.graph?.list_of_graphcanvas?.[0];
       if (!canvas) return;
       const noButtons =
@@ -711,15 +761,14 @@ app.registerExtension({
     root.tabIndex = 0;
     root.addEventListener("pointerenter", () => {
       pointerInside = true;
-      root.focus({ preventScroll: true });
     });
     root.addEventListener("pointerleave", () => {
       pointerInside = false;
     });
     for (const eventName of ["mousedown", "dblclick", "touchstart"]) {
       root.addEventListener(eventName, (event) => {
+        if (event.target.closest?.(".litecontextmenu, .comfy-menu, .comfy-modal, .p-contextmenu")) return;
         event.stopPropagation();
-        event.stopImmediatePropagation?.();
       });
     }
 
@@ -765,10 +814,12 @@ app.registerExtension({
         <div class="precut-nav-handle left"></div>
         <div class="precut-nav-handle right"></div>
       </div>
-      <div class="precut-zoom-label">Wheel = zoom | Double-click bar = reset/restore</div>
     `;
     const timecodes = timeline.querySelector(".precut-timecodes");
+    const selection = timeline.querySelector(".precut-selection");
     const waveCanvas = timeline.querySelector(".precut-wave");
+    const inHandle = timeline.querySelector(".precut-handle.in");
+    const outHandle = timeline.querySelector(".precut-handle.out");
     const navigator = timeline.querySelector(".precut-navigator");
     const navWindow = timeline.querySelector(".precut-nav-window");
     const navLeft = timeline.querySelector(".precut-nav-handle.left");
@@ -802,6 +853,9 @@ app.registerExtension({
       `${icons.inputArrow}<span>LOAD MEDIA INPUTS</span>`,
       () => loadFromInputs()
     );
+    const helpBtn = makeButton("precut-help", "Shortcuts", "?", () => {
+      shortcutsPanel.classList.toggle("open");
+    });
     const markInBtn = makeButton("mark mark-in", "Mark IN at playhead - I. Double-click: mark IN at first frame.", "IN", () => markIn());
     const markOutBtn = makeButton("mark mark-out", "Mark OUT at playhead - O. Double-click: mark OUT at last frame.", "OUT", () => markOut());
     const readout = document.createElement("div");
@@ -818,8 +872,23 @@ app.registerExtension({
       </svg>
       <span class="precut-logo-text">PRECUT</span>
     `;
+    const shortcutsPanel = document.createElement("div");
+    shortcutsPanel.className = "precut-shortcuts-panel";
+    shortcutsPanel.innerHTML = `
+      <h4>Shortcuts</h4>
+      <div><kbd>Space</kbd><span>Play / stop</span></div>
+      <div><kbd>J</kbd><span>Reverse 1x / 2x / 4x</span></div>
+      <div><kbd>K</kbd><span>Stop shuttle</span></div>
+      <div><kbd>L</kbd><span>Forward 1x / 2x / 4x</span></div>
+      <div><kbd>+</kbd><span>Zoom in at playhead</span></div>
+      <div><kbd>-</kbd><span>Zoom out at playhead</span></div>
+      <div><kbd>I / O</kbd><span>Mark IN / OUT</span></div>
+      <div><kbd>Left / Right</kbd><span>Previous / next frame</span></div>
+      <div><kbd>Up / Down</kbd><span>Go to IN / OUT</span></div>
+      <div><kbd>Double Up / Down</kbd><span>Timeline start / end</span></div>
+    `;
 
-    videoActions.append(loadInputsBtn, loadFileBtn, logo, fileInput);
+    videoActions.append(loadInputsBtn, loadFileBtn, helpBtn, logo, fileInput);
     const markerControls = document.createElement("div");
     markerControls.className = "precut-control-group precut-marker-controls";
     const transportControls = document.createElement("div");
@@ -830,8 +899,7 @@ app.registerExtension({
     transportControls.append(firstBtn, prevBtn, playBtn, nextBtn, lastBtn);
     rightControls.append(loopBtn, readout);
     controls.append(markerControls, transportControls, rightControls);
-    root.append(videoActions, videoWrap, splitter, timeline, controls);
-    hidePrecutStateTextarea(root);
+    root.append(videoActions, videoWrap, splitter, timeline, controls, shortcutsPanel);
 
     const widget = node.addDOMWidget("precut", "precut", root, {
       getValue: () => stateWidget.value,
@@ -849,7 +917,6 @@ app.registerExtension({
       getHeight: () => node._precutWidgetHeight || minimumWidgetHeight(),
     });
     node._precutWidget = widget;
-    hidePrecutStateTextarea(root);
 
     function timelineHeight() {
       return Math.max(MIN_TIMELINE_HEIGHT, Math.min(MAX_TIMELINE_HEIGHT, node._precutTimelineHeight || DEFAULT_TIMELINE_HEIGHT));
@@ -900,7 +967,7 @@ app.registerExtension({
       }
     }
 
-    function syncWidgetSize() {
+    function syncWidgetSize(markCanvas = true) {
       if (syncingSize) {
         pendingSizeSync = true;
         return;
@@ -928,9 +995,9 @@ app.registerExtension({
         root.style.setProperty("--precut-timeline-height", `${actualTimelineHeight}px`);
         root.style.setProperty("--precut-widget-height", `${height}px`);
         root.style.height = `${height}px`;
+        waveformDirty = true;
         splitter.classList.remove("collapsed");
         splitter.title = "Drag to resize the timeline";
-        hidePrecutStateTextarea(root);
         widget.options.getMinHeight = () => minHeight;
         widget.options.getMaxHeight = () => Math.max(node._precutWidgetHeight || height, minHeight);
         widget.options.getHeight = () => node._precutWidgetHeight || height;
@@ -939,7 +1006,7 @@ app.registerExtension({
         if (node.size[0] !== width || node.size[1] < minNodeHeight) {
           setNodeSize(width, Math.max(node.size?.[1] || 0, minNodeHeight));
         }
-        node.setDirtyCanvas(true, true);
+        if (markCanvas) node.setDirtyCanvas(true, true);
       } finally {
         syncingSize = false;
       }
@@ -957,12 +1024,12 @@ app.registerExtension({
     node.onResize = function () {
       originalOnResize?.apply(this, arguments);
       syncWidgetSize();
-      render();
+      scheduleRender();
     };
 
     function persist() {
       writeState(stateWidget, state, node);
-      render();
+      scheduleRender();
     }
 
     function duration() {
@@ -977,9 +1044,19 @@ app.registerExtension({
       return Math.max(0, frame / state.fps);
     }
 
+    function stopShuttle() {
+      shuttleDirection = 0;
+      shuttleStep = 0;
+      reverseFrame += 1;
+      video.playbackRate = 1;
+      video.pause();
+      updatePlayButton();
+    }
+
     function seekFrame(frame) {
       frame = Math.max(0, Math.min(state.frame_count - 1, Math.round(frame)));
       video.currentTime = frameToSeconds(frame);
+      ensurePlayheadVisible();
       render();
     }
 
@@ -1044,6 +1121,44 @@ app.registerExtension({
       zoomCenter = Math.max(0, Math.min(1, (start + visible / 2) / total));
     }
 
+    function panVisibleRangeByFrames(delta) {
+      const [start, end] = visibleRange();
+      const visible = end - start;
+      setVisibleRange(start + delta, start + delta + visible);
+      markWaveformDirty();
+      scheduleRender();
+    }
+
+    function zoomTimeline(direction) {
+      const playheadFrame = currentFrame();
+      const factor = direction > 0 ? 1.18 : 1 / 1.18;
+      zoom = Math.max(1, Math.min(32, zoom * factor));
+      zoomCenter = Math.max(0, Math.min(1, playheadFrame / Math.max(1, state.frame_count - 1)));
+      markWaveformDirty();
+      scheduleRender();
+    }
+
+    function doublePressArrow(key) {
+      const now = performance.now();
+      const doubled = lastArrowJumpKey === key && now - lastArrowJumpTime <= 360;
+      lastArrowJumpKey = key;
+      lastArrowJumpTime = now;
+      return doubled;
+    }
+
+    function ensurePlayheadVisible() {
+      const [start, end] = visibleRange();
+      const visible = end - start;
+      const head = currentFrame();
+      if (head > end) {
+        setVisibleRange(head, head + visible);
+        markWaveformDirty();
+      } else if (head < start) {
+        setVisibleRange(head - visible, head);
+        markWaveformDirty();
+      }
+    }
+
     function frameToPct(frame) {
       const [start, end] = visibleRange();
       return Math.max(0, Math.min(100, ((frame - start) / Math.max(1, end - start)) * 100));
@@ -1060,38 +1175,56 @@ app.registerExtension({
       return Math.max(0, Math.min(state.frame_count - 1, pctToFrame(pct)));
     }
 
-    function nearestHandle(frame) {
-      const [start, end] = visibleRange();
-      const framesPerPixel = (end - start) / Math.max(1, timeline.getBoundingClientRect().width);
-      const threshold = Math.max(2, framesPerPixel * 12);
-      const inDistance = Math.abs(frame - state.in_frame);
-      const outDistance = Math.abs(frame - state.out_frame);
+    function rectContainsPoint(rect, event) {
+      return (
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom
+      );
+    }
+
+    function rangeLabelHit(event) {
+      return rectContainsPoint(inHandle.getBoundingClientRect(), event) ||
+        rectContainsPoint(outHandle.getBoundingClientRect(), event);
+    }
+
+    function nearPlayhead(event) {
+      const rect = timeline.getBoundingClientRect();
+      const playheadX = rect.left + (frameToPct(currentFrame()) / 100) * rect.width;
+      return Math.abs(event.clientX - playheadX) <= 9;
+    }
+
+    function nearestRangeEdge(event) {
+      if (rangeLabelHit(event)) return null;
+      const rect = selection.getBoundingClientRect();
+      if (!rectContainsPoint(rect, event)) return null;
+      const threshold = 10;
+      const inDistance = Math.abs(event.clientX - rect.left);
+      const outDistance = Math.abs(event.clientX - rect.right);
       if (inDistance <= threshold && inDistance <= outDistance) return "in";
       if (outDistance <= threshold) return "out";
       return null;
     }
 
-    function nearestPlayhead(frame) {
-      const [start, end] = visibleRange();
-      const framesPerPixel = (end - start) / Math.max(1, timeline.getBoundingClientRect().width);
-      const threshold = Math.max(2, framesPerPixel * 10);
-      return Math.abs(frame - currentFrame()) <= threshold;
-    }
-
-    function overSelectedRange(event, frame) {
-      if (frame < state.in_frame || frame > state.out_frame) return false;
+    function inTimecodeZone(event) {
       const rect = timeline.getBoundingClientRect();
-      const y = event.clientY - rect.top;
-      return y >= 28 && y <= rect.height - 18;
+      return event.clientY - rect.top <= 42;
     }
 
     function renderTimecodes() {
       const [start, end] = visibleRange();
       const points = [0, 0.2, 0.4, 0.6, 0.8, 1].map((p) => Math.round(start + (end - start) * p));
+      const head = currentFrame();
+      const activeEdge = head === points[0] ? "start" : head === points[points.length - 1] ? "end" : "";
+      const key = `${points.join(":")}:${activeEdge}:${state.fps}`;
+      if (key === lastTimecodesKey) return;
+      lastTimecodesKey = key;
       timecodes.innerHTML = points
-        .map((frame) => {
+        .map((frame, index) => {
           const text = fmtTime(frameToSeconds(frame), state.fps);
-          return frame === currentFrame() ? `<strong>${text}</strong>` : `<span>${text}</span>`;
+          const isEdge = index === 0 || index === points.length - 1;
+          return isEdge && frame === head ? `<strong>${text}</strong>` : `<span>${text}</span>`;
         })
         .join("");
     }
@@ -1162,6 +1295,66 @@ app.registerExtension({
       ctx.stroke();
     }
 
+    function markWaveformDirty() {
+      waveformDirty = true;
+    }
+
+    function waveformDrawKey() {
+      const rect = waveCanvas.getBoundingClientRect();
+      const [startFrame, endFrame] = visibleRange();
+      return [
+        Math.round(rect.width),
+        Math.round(rect.height),
+        Math.round(startFrame),
+        Math.round(endFrame),
+        waveformPeaks.length,
+        waveformVersion,
+      ].join(":");
+    }
+
+    function scheduleWaveformDraw(force = false) {
+      if (!force && !waveformDirty) return;
+      if (pendingWaveformFrame) return;
+      pendingWaveformFrame = requestAnimationFrame(() => {
+        pendingWaveformFrame = 0;
+        const key = waveformDrawKey();
+        if (!force && key === lastWaveformKey) {
+          waveformDirty = false;
+          return;
+        }
+        pendingWaveformKey = key;
+        lastWaveformKey = pendingWaveformKey;
+        waveformDirty = false;
+        drawWaveform();
+      });
+    }
+
+    function setWaveformPeaks(peaks) {
+      waveformPeaks = Array.isArray(peaks) ? peaks : [];
+      waveformVersion += 1;
+      markWaveformDirty();
+    }
+
+    function scheduleRender() {
+      if (pendingRenderFrame) return;
+      pendingRenderFrame = requestAnimationFrame(() => {
+        pendingRenderFrame = 0;
+        render();
+      });
+    }
+
+    function scheduleLayoutRender(markCanvas = true) {
+      pendingLayoutMarkCanvas = pendingLayoutMarkCanvas || markCanvas;
+      if (pendingLayoutFrame) return;
+      pendingLayoutFrame = requestAnimationFrame(() => {
+        const markCanvasNow = pendingLayoutMarkCanvas;
+        pendingLayoutFrame = 0;
+        pendingLayoutMarkCanvas = false;
+        syncWidgetSize(markCanvasNow);
+        render();
+      });
+    }
+
     function render() {
       state.in_frame = Math.max(0, Math.min(state.in_frame, state.frame_count - 1));
       state.out_frame = Math.max(state.in_frame, Math.min(state.out_frame, state.frame_count - 1));
@@ -1191,7 +1384,7 @@ app.registerExtension({
       video.style.opacity = audioOnly ? "0" : "1";
       renderTimecodes();
       renderNavigator();
-      requestAnimationFrame(drawWaveform);
+      scheduleWaveformDraw();
     }
     node._precutRender = render;
 
@@ -1215,16 +1408,16 @@ app.registerExtension({
 
     async function loadWaveform() {
       if (!state.video_path) {
-        waveformPeaks = [];
+        setWaveformPeaks([]);
         render();
         return;
       }
       try {
       const response = await fetch(api.apiURL(`/precut/waveform?path=${encodeURIComponent(state.video_path)}`));
       const result = await response.json();
-      waveformPeaks = Array.isArray(result.peaks) ? result.peaks : [];
+      setWaveformPeaks(result.peaks);
       } catch {
-        waveformPeaks = [];
+        setWaveformPeaks([]);
       }
       render();
     }
@@ -1309,6 +1502,9 @@ app.registerExtension({
       const sourceNodes = [connected.video, connected.audio].filter(Boolean);
       const videoPath = sourceNodes.map(videoPathFromNode).find(Boolean);
       try {
+        if (!sourceNodes.length) {
+          throw new Error("Connect a VIDEO or AUDIO input before using LOAD MEDIA INPUTS.");
+        }
         if (connected.video && connected.audio) {
           throw new Error("Connect either VIDEO or AUDIO to PRECUT, not both, before using LOAD MEDIA INPUTS.");
         }
@@ -1352,7 +1548,7 @@ app.registerExtension({
           state.in_frame = 0;
           state.out_frame = state.frame_count - 1;
         }
-        waveformPeaks = [];
+        setWaveformPeaks([]);
         setPlaceholder(
           "Connected media inputs selected. Audio-only inputs will trim on workflow run.",
           "audio"
@@ -1373,11 +1569,60 @@ app.registerExtension({
 
     function togglePlay() {
       if (!state.video_url) return;
+      shuttleDirection = 0;
+      shuttleStep = 0;
+      reverseFrame += 1;
+      video.playbackRate = 1;
       if (video.paused) {
         video.play();
       } else {
         video.pause();
       }
+    }
+
+    function shuttleForward() {
+      if (!state.video_url) return;
+      if (shuttleDirection === 1) {
+        shuttleStep = Math.min(2, shuttleStep + 1);
+      } else {
+        shuttleDirection = 1;
+        shuttleStep = 0;
+      }
+      reverseFrame += 1;
+      video.playbackRate = [1, 2, 4][shuttleStep];
+      video.play();
+      updatePlayButton();
+    }
+
+    function shuttleReverse() {
+      if (!state.video_url) return;
+      if (shuttleDirection === -1) {
+        shuttleStep = Math.min(2, shuttleStep + 1);
+      } else {
+        shuttleDirection = -1;
+        shuttleStep = 0;
+      }
+      video.pause();
+      const speed = [1, 2, 4][shuttleStep];
+      const token = reverseFrame + 1;
+      reverseFrame = token;
+      reverseLastTime = performance.now();
+      const step = (now) => {
+        if (reverseFrame !== token || shuttleDirection !== -1) return;
+        const delta = Math.min(0.05, Math.max(0, (now - reverseLastTime) / 1000));
+        reverseLastTime = now;
+        const next = Math.max(0, video.currentTime - delta * speed);
+        video.currentTime = next;
+        if (next <= 0) {
+          stopShuttle();
+          return;
+        }
+        ensurePlayheadVisible();
+        scheduleRender();
+        requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+      updatePlayButton();
     }
 
     function toggleLoop() {
@@ -1411,16 +1656,14 @@ app.registerExtension({
 
     video.addEventListener("loadedmetadata", setMetadataFromVideo);
     video.addEventListener("timeupdate", () => {
-      if (!video.paused && currentFrame() > state.out_frame) {
-        if (loopBtn.classList.contains("active")) {
+      if (!video.paused && loopBtn.classList.contains("active")) {
+        if (currentFrame() > state.out_frame) {
           seekFrame(state.in_frame);
           video.play();
-        } else {
-          video.pause();
-          seekFrame(state.out_frame);
         }
       }
-      render();
+      ensurePlayheadVisible();
+      scheduleRender();
     });
     video.addEventListener("play", updatePlayButton);
     video.addEventListener("pause", updatePlayButton);
@@ -1433,25 +1676,20 @@ app.registerExtension({
     }
 
     function splitterMetrics() {
-      const controlsRect = controls.getBoundingClientRect();
-      const styles = getComputedStyle(root);
-      const gap = parseFloat(styles.rowGap || styles.gap || "0") || 0;
-      const bottomAnchor = controlsRect.top - gap;
       const maxForCurrentNode = Math.max(
         MIN_TIMELINE_HEIGHT,
         (node._precutWidgetHeight || minimumWidgetHeight()) - fixedWidgetHeight(0) - MIN_VIDEO_HEIGHT
       );
       return {
-        bottomAnchor,
         maxTimeline: Math.min(MAX_TIMELINE_HEIGHT, maxForCurrentNode),
       };
     }
 
-    function timelineHeightForSplitterCenter(clientY, metrics = splitterMetrics()) {
-      const requested = metrics.bottomAnchor - clientY - SPLITTER_HEIGHT / 2;
+    function timelineHeightFromDrag(clientY, drag) {
+      const requested = drag.startTimelineHeight - (clientY - drag.startClientY);
       return Math.max(
         MIN_TIMELINE_HEIGHT,
-        Math.min(metrics.maxTimeline, requested)
+        Math.min(drag.metrics.maxTimeline, requested)
       );
     }
     for (const eventName of ["mousedown", "click", "dblclick", "touchstart", "touchmove"]) {
@@ -1459,39 +1697,42 @@ app.registerExtension({
     }
     splitter.addEventListener("pointerdown", (event) => {
       const metrics = splitterMetrics();
+      activePrecutDrag = true;
       timelineResize = {
         pointerId: event.pointerId,
         metrics,
+        startClientY: event.clientY,
+        startTimelineHeight: timelineHeight(),
       };
-      node._precutTimelineHeight = timelineHeightForSplitterCenter(event.clientY, metrics);
       splitter.classList.add("resizing");
       try {
         splitter.setPointerCapture?.(event.pointerId);
       } catch {}
-      syncWidgetSize();
-      render();
       stopSplitterEvent(event);
     }, true);
     splitter.addEventListener("pointermove", (event) => {
       if (!timelineResize || timelineResize.pointerId !== event.pointerId) return;
-      node._precutTimelineHeight = timelineHeightForSplitterCenter(event.clientY, timelineResize.metrics);
-      syncWidgetSize();
+      node._precutTimelineHeight = timelineHeightFromDrag(event.clientY, timelineResize);
+      markWaveformDirty();
+      syncWidgetSize(false);
       render();
       stopSplitterEvent(event);
     }, true);
     splitter.addEventListener("pointerup", (event) => {
       if (timelineResize?.pointerId === event.pointerId) {
         timelineResize = null;
+        activePrecutDrag = false;
         splitter.classList.remove("resizing");
         try {
           splitter.releasePointerCapture?.(event.pointerId);
         } catch {}
-        syncWidgetSize();
+        syncWidgetSize(false);
         stopSplitterEvent(event);
       }
     });
     splitter.addEventListener("pointercancel", (event) => {
       timelineResize = null;
+      activePrecutDrag = false;
       splitter.classList.remove("resizing");
       stopSplitterEvent(event);
     });
@@ -1535,51 +1776,76 @@ app.registerExtension({
         const start = Math.max(0, Math.min(maxStart, hoverFrame - rangeDragOffset));
         state.in_frame = start;
         state.out_frame = start + length;
-        timeline.style.cursor = "grabbing";
+        timeline.style.cursor = "move";
         persist();
+      } else if (dragging === "timeline-pan" && timelinePan) {
+        const rect = timeline.getBoundingClientRect();
+        const framesPerPixel = (timelinePan.end - timelinePan.start) / Math.max(1, rect.width);
+        const delta = (event.clientX - timelinePan.clientX) * framesPerPixel;
+        setVisibleRange(timelinePan.start - delta, timelinePan.end - delta);
+        markWaveformDirty();
+        timeline.style.cursor = "grabbing";
+        scheduleRender();
       } else {
-        if (nearestPlayhead(hoverFrame)) {
-          timeline.style.cursor = "pointer";
-        } else if (nearestHandle(hoverFrame)) {
+        if (nearPlayhead(event)) {
+          timeline.style.cursor = "crosshair";
+        } else if (inTimecodeZone(event)) {
+          timeline.style.cursor = "crosshair";
+        } else if (rangeLabelHit(event)) {
+          timeline.style.cursor = "move";
+        } else if (nearestRangeEdge(event)) {
           timeline.style.cursor = "ew-resize";
-        } else if (overSelectedRange(event, hoverFrame)) {
-          timeline.style.cursor = "grab";
         } else {
-          timeline.style.cursor = "pointer";
+          timeline.style.cursor = "grab";
         }
       }
     });
 
     timeline.addEventListener("mousedown", (event) => {
       if (event.target.closest(".precut-navigator")) return;
+      activePrecutDrag = true;
       hoverFrame = frameFromEvent(event);
-      if (nearestPlayhead(hoverFrame)) {
+      if (nearPlayhead(event) || inTimecodeZone(event)) {
         dragging = "playhead";
         seekFrame(hoverFrame);
+      } else if (rangeLabelHit(event)) {
+        dragging = "range";
+        rangeDragOffset = hoverFrame - state.in_frame;
+        timeline.style.cursor = "move";
       } else {
-        dragging = nearestHandle(hoverFrame);
-        if (!dragging && overSelectedRange(event, hoverFrame)) {
-          dragging = "range";
-          rangeDragOffset = hoverFrame - state.in_frame;
+        dragging = nearestRangeEdge(event);
+        if (dragging) {
+          timeline.style.cursor = "ew-resize";
+        } else {
+          const [start, end] = visibleRange();
+          dragging = "timeline-pan";
+          timelinePan = { clientX: event.clientX, start, end };
           timeline.style.cursor = "grabbing";
-        }
-        if (!dragging) {
-          dragging = "playhead";
-          seekFrame(hoverFrame);
         }
       }
       event.preventDefault();
     });
     window.addEventListener("mouseup", () => {
+      const wasActive = activePrecutDrag;
       dragging = null;
       rangeDragOffset = 0;
+      timelinePan = null;
       navDragging = null;
+      activePrecutDrag = false;
       navigator.style.cursor = "grab";
-      resetPrecutCanvasDrag(null, true);
+      if (wasActive) resetPrecutCanvasDrag(null, true);
     });
-    window.addEventListener("pointerup", (event) => resetPrecutCanvasDrag(event, true), true);
-    window.addEventListener("pointercancel", (event) => resetPrecutCanvasDrag(event, true), true);
-    window.addEventListener("blur", (event) => resetPrecutCanvasDrag(event, true), true);
+    window.addEventListener("pointerup", (event) => {
+      if (activePrecutDrag) resetPrecutCanvasDrag(event, true);
+    }, true);
+    window.addEventListener("pointercancel", (event) => {
+      if (activePrecutDrag) resetPrecutCanvasDrag(event, true);
+      activePrecutDrag = false;
+    }, true);
+    window.addEventListener("blur", (event) => {
+      if (activePrecutDrag) resetPrecutCanvasDrag(event, true);
+      activePrecutDrag = false;
+    }, true);
     window.addEventListener("mousemove", (event) => resetPrecutCanvasDrag(event), true);
 
     function navFrameFromEvent(event) {
@@ -1594,6 +1860,7 @@ app.registerExtension({
         event.stopPropagation();
         return;
       }
+      activePrecutDrag = true;
       const [start, end] = visibleRange();
       const total = Math.max(1, state.frame_count - 1);
       const frame = navFrameFromEvent(event);
@@ -1608,7 +1875,8 @@ app.registerExtension({
       } else {
         const nextStart = Math.max(0, Math.min(total - visible, frame - visible / 2));
         setVisibleRange(nextStart, nextStart + visible);
-        render();
+        markWaveformDirty();
+        scheduleRender();
         navDragging = { mode: "window", start: nextStart, end: nextStart + visible, offset: visible / 2 };
         navigator.style.cursor = "grabbing";
       }
@@ -1636,19 +1904,15 @@ app.registerExtension({
         const start = Math.max(0, Math.min(total - visible, frame - navDragging.offset));
         setVisibleRange(start, start + visible);
       }
-      render();
+      markWaveformDirty();
+      scheduleRender();
     });
 
     timeline.addEventListener(
       "wheel",
       (event) => {
         event.preventDefault();
-        const playheadFrame = currentFrame();
-        const direction = event.deltaY < 0 ? 1.18 : 1 / 1.18;
-        zoom = Math.max(1, Math.min(32, zoom * direction));
-        zoomCenter = playheadFrame / Math.max(1, state.frame_count - 1);
-        zoomCenter = Math.max(0, Math.min(1, zoomCenter));
-        render();
+        zoomTimeline(event.deltaY < 0 ? 1 : -1);
       },
       { passive: false }
     );
@@ -1660,7 +1924,7 @@ app.registerExtension({
       if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
 
       const key = event.key.toLowerCase();
-      const handled = ["i", "o", "arrowdown", "arrowup", "arrowleft", "arrowright"].includes(key) || event.code === "Space";
+      const handled = ["i", "o", "j", "k", "l", "+", "=", "-", "_", "arrowdown", "arrowup", "arrowleft", "arrowright"].includes(key) || event.code === "Space";
       if (handled) {
         event.preventDefault();
         event.stopPropagation();
@@ -1672,15 +1936,27 @@ app.registerExtension({
       } else if (key === "o") {
         markOut();
       } else if (event.key === "ArrowDown") {
-        seekFrame(state.out_frame);
+        seekFrame(doublePressArrow("down") ? state.frame_count - 1 : state.out_frame);
       } else if (event.key === "ArrowUp") {
-        seekFrame(state.in_frame);
+        seekFrame(doublePressArrow("up") ? 0 : state.in_frame);
       } else if (event.key === "ArrowLeft") {
+        lastArrowJumpKey = "";
         seekFrame(currentFrame() - 1);
       } else if (event.key === "ArrowRight") {
+        lastArrowJumpKey = "";
         seekFrame(currentFrame() + 1);
       } else if (event.code === "Space") {
         togglePlay();
+      } else if (key === "+" || key === "=") {
+        zoomTimeline(1);
+      } else if (key === "-" || key === "_") {
+        zoomTimeline(-1);
+      } else if (key === "j") {
+        shuttleReverse();
+      } else if (key === "k") {
+        stopShuttle();
+      } else if (key === "l") {
+        shuttleForward();
       }
     }, true);
 
@@ -1689,7 +1965,8 @@ app.registerExtension({
     render();
     new ResizeObserver(() => {
       syncWidgetSize();
-      render();
+      markWaveformDirty();
+      scheduleRender();
     }).observe(root);
     node.setDirtyCanvas(true, true);
   },

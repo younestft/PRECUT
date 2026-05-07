@@ -24,6 +24,8 @@ const MIN_TIMELINE_HEIGHT = 96;
 const MAX_TIMELINE_HEIGHT = 900;
 const DEFAULT_TIMELINE_HEIGHT = 132;
 const MAX_ZOOM = 128;
+const MIN_VISIBLE_FRAME_SPAN = 6;
+const MIN_TIMELINE_GRID_PX = 10;
 const MIN_NAV_WINDOW_WIDTH = 42;
 const NAV_HANDLE_SIZE = 14;
 const SHUTTLE_SPEEDS = [1, 2, 4, 8, 16];
@@ -269,8 +271,9 @@ function css() {
       border: 1px solid #101214;
       border-radius: 7px;
       background:
-        repeating-linear-gradient(90deg, rgba(255,255,255,.035) 0 1px, transparent 1px 34px),
+        repeating-linear-gradient(90deg, rgba(255,255,255,.04) 0 1px, transparent 1px var(--frame-grid-step, 34px)),
         linear-gradient(180deg, #191b1d, #111315);
+      background-position: var(--frame-grid-offset, 0px) 0, 0 0;
       cursor: ew-resize;
       user-select: none;
     }
@@ -918,6 +921,8 @@ app.registerExtension({
     let rangeDragOffset = 0;
     let timelinePan = null;
     let navDragging = null;
+    let navigatorBodyCursor = "";
+    let navigatorCursorActive = false;
     let previousZoomState = null;
     let waveformPeaks = [];
     let waveformVersion = 0;
@@ -1542,9 +1547,31 @@ app.registerExtension({
       progressFill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
     }
 
+    function timelineTotalSpan() {
+      return Math.max(1, state.frame_count - 1);
+    }
+
+    function minimumVisibleSpan(total = timelineTotalSpan()) {
+      return Math.min(total, Math.max(MIN_VISIBLE_FRAME_SPAN, total / MAX_ZOOM));
+    }
+
+    function timelineMaxZoom(total = timelineTotalSpan()) {
+      const minVisible = minimumVisibleSpan(total);
+      if (minVisible <= 0) return 1;
+      return Math.max(1, Math.min(MAX_ZOOM, total / minVisible));
+    }
+
+    function clampTimelineZoom() {
+      const maxZoom = timelineMaxZoom();
+      zoom = Math.max(1, Math.min(maxZoom, zoom || 1));
+      zoomCenter = Math.max(0, Math.min(1, zoomCenter || 0.5));
+      return maxZoom;
+    }
+
     function visibleRange() {
-      const total = Math.max(1, state.frame_count - 1);
-      const visible = Math.max(1, total / zoom);
+      const total = timelineTotalSpan();
+      clampTimelineZoom();
+      const visible = Math.max(minimumVisibleSpan(total), total / zoom);
       const center = zoomCenter * total;
       let start = center - visible / 2;
       let end = center + visible / 2;
@@ -1560,8 +1587,9 @@ app.registerExtension({
     }
 
     function setVisibleRange(start, end) {
-      const total = Math.max(1, state.frame_count - 1);
-      const minVisible = Math.max(1, Math.round(total / MAX_ZOOM));
+      const total = timelineTotalSpan();
+      const maxZoom = timelineMaxZoom(total);
+      const minVisible = minimumVisibleSpan(total);
       start = Math.max(0, Math.min(total - minVisible, start));
       end = Math.max(start + minVisible, Math.min(total, end));
       if (end > total) {
@@ -1569,7 +1597,7 @@ app.registerExtension({
         end = total;
       }
       const visible = Math.max(1, end - start);
-      zoom = Math.max(1, Math.min(MAX_ZOOM, total / visible));
+      zoom = Math.max(1, Math.min(maxZoom, total / visible));
       zoomCenter = Math.max(0, Math.min(1, (start + visible / 2) / total));
     }
 
@@ -1584,8 +1612,8 @@ app.registerExtension({
     function zoomTimeline(direction) {
       const playheadFrame = currentFrame();
       const factor = direction > 0 ? 1.18 : 1 / 1.18;
-      zoom = Math.max(1, Math.min(MAX_ZOOM, zoom * factor));
-      zoomCenter = Math.max(0, Math.min(1, playheadFrame / Math.max(1, state.frame_count - 1)));
+      zoom = Math.max(1, Math.min(timelineMaxZoom(), zoom * factor));
+      zoomCenter = Math.max(0, Math.min(1, playheadFrame / timelineTotalSpan()));
       markWaveformDirty();
       scheduleRender();
     }
@@ -1699,54 +1727,70 @@ app.registerExtension({
     }
 
     function navigatorMetrics() {
-      const total = Math.max(1, state.frame_count - 1);
+      const total = timelineTotalSpan();
       const [start, end] = visibleRange();
       const track = navigatorTrackMetrics();
       const visible = Math.max(1, end - start);
       const maxStart = Math.max(0, total - visible);
-      const rect = navigatorVisualRange(start, end, total, track.trackWidth);
-      const visualLeft = rect.left;
-      const visualWidth = rect.width;
-      const maxVisualLeft = rect.maxLeft;
-      return { total, start, end, ...track, visualLeft, visualWidth, visible, maxStart, maxVisualLeft };
+      const thumb = navigatorThumbFromRange(start, end, total, track.trackWidth);
+      return {
+        total,
+        start,
+        end,
+        ...track,
+        visualLeft: thumb.left,
+        visualWidth: thumb.width,
+        maxStart,
+        maxVisualLeft: thumb.maxLeft,
+      };
     }
 
-    function navigatorVisualRange(start, end, total, trackWidth) {
+    function navigatorThumbWidthForRange(start, end, total, trackWidth) {
       const visible = Math.max(1, end - start);
       const minWidth = Math.min(MIN_NAV_WINDOW_WIDTH, trackWidth);
-      const currentZoom = Math.max(1, Math.min(MAX_ZOOM, total / visible));
-      const zoomProgress = MAX_ZOOM <= 1 ? 1 : (currentZoom - 1) / (MAX_ZOOM - 1);
-      const width = Math.min(trackWidth, Math.max(minWidth, trackWidth - (trackWidth - minWidth) * zoomProgress));
+      const maxZoom = timelineMaxZoom(total);
+      const currentZoom = Math.max(1, Math.min(maxZoom, total / visible));
+      const zoomProgress = maxZoom <= 1 ? 0 : (currentZoom - 1) / (maxZoom - 1);
+      return Math.min(trackWidth, Math.max(minWidth, trackWidth - (trackWidth - minWidth) * zoomProgress));
+    }
+
+    function navigatorThumbFromRange(start, end, total, trackWidth) {
+      const visible = Math.max(1, end - start);
+      const width = navigatorThumbWidthForRange(start, end, total, trackWidth);
       const maxStart = Math.max(0, total - visible);
       const maxLeft = Math.max(0, trackWidth - width);
       const left = thumbLeftFromRangeStart(start, maxStart, maxLeft);
       return { left, width, right: left + width, maxLeft };
     }
 
-    function rangeEndFromVisualRight(start, visualRight, total, trackWidth) {
-      const target = Math.max(0, Math.min(trackWidth, visualRight));
-      let low = Math.min(total, start + 1);
+    function rangeEndFromThumbRight(start, thumbRight, total, trackWidth) {
+      const minVisible = minimumVisibleSpan(total);
+      const target = Math.max(0, Math.min(trackWidth, thumbRight));
+      if (start + minVisible >= total) return total;
+      let low = Math.min(total, start + minimumVisibleSpan(total));
       let high = total;
       for (let i = 0; i < 24; i++) {
         const mid = (low + high) / 2;
-        const right = navigatorVisualRange(start, mid, total, trackWidth).right;
+        const right = navigatorThumbFromRange(start, mid, total, trackWidth).right;
         if (right < target) low = mid;
         else high = mid;
       }
-      return Math.max(start + 1, Math.min(total, high));
+      return Math.max(start + minimumVisibleSpan(total), Math.min(total, high));
     }
 
-    function rangeStartFromThumbLeftEdge(end, visualLeft, total, trackWidth) {
-      const target = Math.max(0, Math.min(trackWidth, visualLeft));
+    function rangeStartFromThumbLeftEdge(end, thumbLeft, total, trackWidth) {
+      const minVisible = minimumVisibleSpan(total);
+      const target = Math.max(0, Math.min(trackWidth, thumbLeft));
+      if (end - minVisible <= 0) return 0;
       let low = 0;
-      let high = Math.max(0, end - 1);
+      let high = Math.max(0, end - minVisible);
       for (let i = 0; i < 24; i++) {
         const mid = (low + high) / 2;
-        const left = navigatorVisualRange(mid, end, total, trackWidth).left;
+        const left = navigatorThumbFromRange(mid, end, total, trackWidth).left;
         if (left < target) low = mid;
         else high = mid;
       }
-      return Math.max(0, Math.min(end - 1, high));
+      return Math.max(0, Math.min(end - minVisible, high));
     }
 
     function navigatorTrackMetrics() {
@@ -1785,12 +1829,13 @@ app.registerExtension({
     }
 
     function toggleTimelineZoom() {
+      const maxZoom = timelineMaxZoom();
       if (zoom > 1.0001) {
         previousZoomState = { zoom, zoomCenter };
         zoom = 1;
         zoomCenter = 0.5;
       } else if (previousZoomState) {
-        zoom = Math.max(1, Math.min(MAX_ZOOM, previousZoomState.zoom));
+        zoom = Math.max(1, Math.min(maxZoom, previousZoomState.zoom));
         zoomCenter = Math.max(0, Math.min(1, previousZoomState.zoomCenter));
         previousZoomState = null;
       }
@@ -1899,10 +1944,33 @@ app.registerExtension({
       });
     }
 
+    function niceFrameGridStep(minFrames) {
+      const magnitude = 10 ** Math.floor(Math.log10(Math.max(1, minFrames)));
+      for (const multiplier of [1, 2, 5, 10]) {
+        const step = multiplier * magnitude;
+        if (step >= minFrames) return step;
+      }
+      return 10 * magnitude;
+    }
+
+    function syncTimelineFrameGrid(visibleStart, visibleEnd) {
+      const width = timeline.clientWidth || timeline.getBoundingClientRect().width || 1;
+      const visibleSpan = Math.max(1, visibleEnd - visibleStart);
+      const framePx = width / visibleSpan;
+      const gridFrames = framePx >= MIN_TIMELINE_GRID_PX
+        ? 1
+        : niceFrameGridStep(Math.ceil(MIN_TIMELINE_GRID_PX / Math.max(0.001, framePx)));
+      const gridStepPx = Math.max(1, framePx * gridFrames);
+      const startOffsetFrames = ((visibleStart % gridFrames) + gridFrames) % gridFrames;
+      timeline.style.setProperty("--frame-grid-step", `${gridStepPx}px`);
+      timeline.style.setProperty("--frame-grid-offset", `${-startOffsetFrames * framePx}px`);
+    }
+
     function render() {
       state.in_frame = Math.max(0, Math.min(state.in_frame, state.frame_count - 1));
       state.out_frame = Math.max(state.in_frame, Math.min(state.out_frame, state.frame_count - 1));
       const [visibleStart, visibleEnd] = visibleRange();
+      syncTimelineFrameGrid(visibleStart, visibleEnd);
       const inPct = frameToPct(state.in_frame);
       const outPct = frameToPct(state.out_frame);
       const headPct = frameToPct(currentFrame());
@@ -2521,27 +2589,47 @@ app.registerExtension({
       dragging = null;
       rangeDragOffset = 0;
       timelinePan = null;
-      navDragging = null;
+      endNavigatorDrag();
       activePrecutDrag = false;
-      navigator.style.cursor = "grab";
       if (wasActive) resetPrecutCanvasDrag(null, true);
     });
     window.addEventListener("pointerup", (event) => {
-      if (activePrecutDrag) resetPrecutCanvasDrag(event, true);
+      const endedNavigator = endNavigatorDrag();
+      if (activePrecutDrag || endedNavigator) resetPrecutCanvasDrag(event, true);
     }, true);
     window.addEventListener("pointercancel", (event) => {
-      if (activePrecutDrag) resetPrecutCanvasDrag(event, true);
+      const endedNavigator = endNavigatorDrag();
+      if (activePrecutDrag || endedNavigator) resetPrecutCanvasDrag(event, true);
       activePrecutDrag = false;
     }, true);
     window.addEventListener("blur", (event) => {
-      if (activePrecutDrag) resetPrecutCanvasDrag(event, true);
+      const endedNavigator = endNavigatorDrag();
+      if (activePrecutDrag || endedNavigator) resetPrecutCanvasDrag(event, true);
       activePrecutDrag = false;
     }, true);
     window.addEventListener("mousemove", (event) => resetPrecutCanvasDrag(event), true);
 
-    function navFrameFromLocalX(localX, metrics = navigatorTrackMetrics()) {
-      const pct = Math.max(0, Math.min(1, (localX - metrics.trackLeft) / metrics.trackWidth));
-      return pct * Math.max(1, state.frame_count - 1);
+    function setNavigatorDragCursor(cursor) {
+      if (!navigatorCursorActive) {
+        navigatorBodyCursor = document.body.style.cursor;
+        navigatorCursorActive = true;
+      }
+      navigator.style.cursor = cursor;
+      document.body.style.cursor = cursor;
+    }
+
+    function clearNavigatorDragCursor() {
+      navigator.style.cursor = "grab";
+      if (navigatorCursorActive) document.body.style.cursor = navigatorBodyCursor;
+      navigatorBodyCursor = "";
+      navigatorCursorActive = false;
+    }
+
+    function endNavigatorDrag() {
+      if (!navDragging) return false;
+      navDragging = null;
+      clearNavigatorDragCursor();
+      return true;
     }
 
     function beginNavigatorDrag(event) {
@@ -2553,8 +2641,8 @@ app.registerExtension({
       activePrecutDrag = true;
       const metrics = navigatorMetrics();
       const { start, end, total, visualLeft, visualWidth, maxStart, maxVisualLeft } = metrics;
-      const localX = clampNavigatorX(navigatorDragEventX(event, metrics), metrics);
-      const frame = navFrameFromLocalX(localX, metrics);
+      const rawLocalX = navigatorDragEventX(event, metrics);
+      const localX = clampNavigatorX(rawLocalX, metrics);
       const visible = end - start;
       const overVisualWindow = localX >= visualLeft && localX <= visualLeft + visualWidth;
       if (event.target === navLeft) {
@@ -2562,15 +2650,17 @@ app.registerExtension({
           mode: "left",
           start,
           end,
-          pointerOffsetPx: localX - visualLeft,
+          pointerOffsetPx: rawLocalX - visualLeft,
         };
+        setNavigatorDragCursor("ew-resize");
       } else if (event.target === navRight) {
         navDragging = {
           mode: "right",
           start,
           end,
-          pointerOffsetPx: localX - (visualLeft + visualWidth),
+          pointerOffsetPx: rawLocalX - (visualLeft + visualWidth),
         };
+        setNavigatorDragCursor("ew-resize");
       } else if (overVisualWindow) {
         navDragging = {
           mode: "window",
@@ -2578,23 +2668,24 @@ app.registerExtension({
           end,
           visualLeft,
           visualWidth,
-          pointerOffsetPx: localX - visualLeft,
+          pointerOffsetPx: rawLocalX - visualLeft,
         };
-        navigator.style.cursor = "grabbing";
+        setNavigatorDragCursor("grabbing");
       } else {
-        const nextStart = Math.max(0, Math.min(total - visible, frame - visible / 2));
+        const targetVisualLeft = Math.max(0, Math.min(maxVisualLeft, localX - visualWidth / 2));
+        const nextStart = rangeStartFromThumbLeft(targetVisualLeft, maxStart, maxVisualLeft);
         setVisibleRange(nextStart, nextStart + visible);
         markWaveformDirty();
         scheduleRender();
-        const nextVisualLeft = thumbLeftFromRangeStart(nextStart, maxStart, maxVisualLeft);
+        const updatedMetrics = navigatorMetrics();
         navDragging = {
           mode: "window",
-          start: nextStart,
-          end: nextStart + visible,
-          visualWidth,
-          pointerOffsetPx: Math.max(0, Math.min(visualWidth, localX - nextVisualLeft)),
+          start: updatedMetrics.start,
+          end: updatedMetrics.end,
+          visualWidth: updatedMetrics.visualWidth,
+          pointerOffsetPx: Math.max(0, Math.min(updatedMetrics.visualWidth, rawLocalX - updatedMetrics.visualLeft)),
         };
-        navigator.style.cursor = "grabbing";
+        setNavigatorDragCursor("grabbing");
       }
       event.preventDefault();
       event.stopPropagation();
@@ -2602,7 +2693,7 @@ app.registerExtension({
 
     function updateNavigatorDrag(event) {
       if (!navDragging) return;
-      const total = Math.max(1, state.frame_count - 1);
+      const total = timelineTotalSpan();
       const visible = navDragging.end - navDragging.start;
       if (navDragging.mode === "left") {
         const metrics = navigatorTrackMetrics();
@@ -2612,7 +2703,7 @@ app.registerExtension({
       } else if (navDragging.mode === "right") {
         const metrics = navigatorTrackMetrics();
         const edge = navigatorDragEventX(event, metrics) - navDragging.pointerOffsetPx;
-        const end = rangeEndFromVisualRight(navDragging.start, edge, total, metrics.trackWidth);
+        const end = rangeEndFromThumbRight(navDragging.start, edge, total, metrics.trackWidth);
         setVisibleRange(navDragging.start, end);
       } else {
         const metrics = navigatorTrackMetrics();
@@ -2629,6 +2720,8 @@ app.registerExtension({
     }
 
     navigator.addEventListener("mousedown", beginNavigatorDrag);
+    navLeft.addEventListener("mousedown", beginNavigatorDrag);
+    navRight.addEventListener("mousedown", beginNavigatorDrag);
 
     navigator.addEventListener("dblclick", (event) => {
       toggleTimelineZoom();

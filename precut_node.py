@@ -219,6 +219,22 @@ def _audio_from_video_object(video):
         return _empty_audio()
 
 
+def _images_from_video_object(video):
+    get_components = getattr(video, "get_components", None)
+    if not callable(get_components):
+        return None
+    try:
+        images = getattr(get_components(), "images", None)
+        if torch.is_tensor(images):
+            if images.ndim == 4:
+                return images.clone()
+            if images.ndim == 3:
+                return images.unsqueeze(0).clone()
+    except Exception:
+        pass
+    return None
+
+
 class PRECUT:
     @classmethod
     def INPUT_TYPES(cls):
@@ -238,8 +254,8 @@ class PRECUT:
             },
         }
 
-    RETURN_TYPES = ("VIDEO", "AUDIO", "FLOAT")
-    RETURN_NAMES = ("VIDEO", "AUDIO", "DURATION")
+    RETURN_TYPES = ("VIDEO", "AUDIO", "IMAGE", "FLOAT")
+    RETURN_NAMES = ("video", "audio", "image", "duration")
     FUNCTION = "cut"
     CATEGORY = "PRECUT"
 
@@ -265,14 +281,14 @@ class PRECUT:
 
         if video is not None and not video_path:
             video_out = _trim_video_object(video, start_seconds, duration)
-            return (video_out, _audio_from_video_object(video_out), float(duration))
+            return (video_out, _audio_from_video_object(video_out), _images_from_video_object(video_out), float(duration))
 
         if not video_path and audio is not None:
             audio_total = _audio_duration(audio)
             start_seconds = min(start_seconds, audio_total) if audio_total > 0 else start_seconds
             if audio_total > 0:
                 duration = min(duration, max(0.0, audio_total - start_seconds))
-            return (None, _trim_audio(audio, start_seconds, duration), float(duration))
+            return (None, _trim_audio(audio, start_seconds, duration), None, float(duration))
 
         if not video_path:
             raise RuntimeError("PRECUT needs a loaded media file, connected VIDEO input, or connected AUDIO input.")
@@ -281,11 +297,11 @@ class PRECUT:
 
         if state.get("media_type") == "audio" or _is_audio_path(resolved):
             loaded_audio = _load_audio_segment(resolved, start_seconds, duration)
-            return (None, loaded_audio, float(duration))
+            return (None, loaded_audio, None, float(duration))
 
         video_out = InputImpl.VideoFromFile(resolved, start_time=start_seconds, duration=duration)
         loaded_audio = _load_audio_segment(resolved, start_seconds, duration)
-        return (video_out, loaded_audio, float(duration))
+        return (video_out, loaded_audio, _images_from_video_object(video_out), float(duration))
 
     @classmethod
     def IS_CHANGED(cls, precut_state="{}", **kwargs):
@@ -324,9 +340,10 @@ class PRECUTV2(io.ComfyNode):
                 io.Audio.Input("audio", optional=True),
             ],
             outputs=[
-                io.Video.Output(display_name="VIDEO"),
-                io.Audio.Output(display_name="AUDIO"),
-                io.Float.Output(display_name="DURATION"),
+                io.Video.Output(display_name="video"),
+                io.Audio.Output(display_name="audio"),
+                io.Image.Output(display_name="image"),
+                io.Float.Output(display_name="duration"),
             ],
         )
 

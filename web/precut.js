@@ -25,6 +25,8 @@ const MAX_TIMELINE_HEIGHT = 900;
 const DEFAULT_TIMELINE_HEIGHT = 132;
 const MAX_ZOOM = 128;
 const MIN_NAV_WINDOW_WIDTH = 42;
+const NAV_HANDLE_SIZE = 14;
+const SHUTTLE_SPEEDS = [1, 2, 4, 8, 16];
 const CONTROLS_HEIGHT = 48;
 const SPLITTER_HEIGHT = 8;
 const FIXED_WIDGET_HEIGHT = 34 + DEFAULT_TIMELINE_HEIGHT + CONTROLS_HEIGHT + SPLITTER_HEIGHT + 46;
@@ -343,6 +345,37 @@ function css() {
       right: auto;
       top: var(--out-label-top);
     }
+    .precut-offscreen-indicator {
+      position: absolute;
+      top: 50%;
+      width: 26px;
+      height: 26px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      color: var(--yellow);
+      pointer-events: none;
+      transform: translateY(-50%);
+      z-index: 5;
+    }
+    .precut-offscreen-indicator.visible {
+      display: flex;
+    }
+    .precut-offscreen-indicator.left {
+      left: 8px;
+    }
+    .precut-offscreen-indicator.right {
+      right: 8px;
+    }
+    .precut-offscreen-indicator svg {
+      width: 22px;
+      height: 22px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
     .precut-playhead {
       position: absolute;
       left: var(--playhead);
@@ -382,7 +415,8 @@ function css() {
       right: 18px;
       bottom: 0;
       height: 18px;
-      overflow: visible;
+      box-sizing: border-box;
+      overflow: hidden;
       border-radius: 999px;
       background: #373737;
       border: 1px solid rgba(255,255,255,.12);
@@ -394,29 +428,34 @@ function css() {
       position: absolute;
       left: 0;
       width: 100%;
-      min-width: ${MIN_NAV_WINDOW_WIDTH}px;
+      min-width: 0;
       top: 0;
       height: 100%;
+      box-sizing: border-box;
       border-radius: 999px;
       background: linear-gradient(180deg, #898989, #686868);
       box-shadow: inset 0 0 0 1px rgba(255,255,255,.14), 0 1px 2px rgba(0,0,0,.5);
+      z-index: 1;
     }
     .precut-nav-handle {
       position: absolute;
       top: 2px;
-      width: 14px;
-      height: 14px;
+      width: ${NAV_HANDLE_SIZE}px;
+      height: ${NAV_HANDLE_SIZE}px;
       border: 2px solid #c4cbd4;
       border-radius: 999px;
       background: #202224;
       box-shadow: 0 0 0 1px rgba(0,0,0,.55), 0 1px 4px rgba(0,0,0,.55);
       box-sizing: border-box;
       cursor: ew-resize;
+      z-index: 2;
     }
-    .precut-nav-handle.left,
+    .precut-nav-handle.left {
+      left: 0;
+    }
     .precut-nav-handle.right {
       left: 0;
-      transform: translateX(-50%);
+      transform: translateX(-100%);
     }
     .precut-controls {
       display: flex;
@@ -663,6 +702,7 @@ function css() {
       overflow: hidden;
       box-sizing: border-box;
       position: relative;
+      user-select: none;
     }
     .precut-readout-label {
       min-width: 0;
@@ -705,6 +745,7 @@ function css() {
       outline: 0;
       padding: 0;
       background: transparent;
+      user-select: text;
     }
     .precut-readout .precut-range-readout {
       color: var(--yellow);
@@ -712,7 +753,7 @@ function css() {
       overflow: hidden;
       text-overflow: ellipsis;
       user-select: none;
-      pointer-events: none;
+      pointer-events: auto;
     }
     .precut-file { display: none; }
   `;
@@ -892,10 +933,15 @@ app.registerExtension({
     let playheadPairEditDigits = "";
     let scrubAudioTimer = 0;
     let scrubAudioToken = 0;
+    let reverseAudioContext = null;
+    let reverseAudioBuffer = null;
+    let reverseAudioKey = "";
+    let reverseAudioSource = null;
+    let reverseAudioToken = 0;
+    let reverseAudioLoading = null;
     let shuttleDirection = 0;
     let shuttleStep = 0;
     let reverseFrame = 0;
-    let reverseLastTime = 0;
     let lastArrowJumpKey = "";
     let lastArrowJumpTime = 0;
 
@@ -948,6 +994,8 @@ app.registerExtension({
     video.setAttribute("disableRemotePlayback", "");
     video.setAttribute("controlsList", "nodownload noremoteplayback");
     video.setAttribute("x-webkit-airplay", "deny");
+    const scrubAudio = document.createElement("audio");
+    scrubAudio.preload = "auto";
     const placeholder = document.createElement("div");
     placeholder.className = "precut-placeholder";
     function setPlaceholder(message, mode = "empty") {
@@ -978,6 +1026,12 @@ app.registerExtension({
       <div class="precut-timecodes"></div>
       <div class="precut-selection"></div>
       <canvas class="precut-wave"></canvas>
+      <div class="precut-offscreen-indicator left" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M13 6 7 12l6 6"/><path d="M18 6l-6 6 6 6"/></svg>
+      </div>
+      <div class="precut-offscreen-indicator right" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="m11 6 6 6-6 6"/><path d="m6 6 6 6-6 6"/></svg>
+      </div>
       <div class="precut-handle in">IN</div>
       <div class="precut-handle out">OUT</div>
       <div class="precut-playhead"></div>
@@ -990,6 +1044,8 @@ app.registerExtension({
     const timecodes = timeline.querySelector(".precut-timecodes");
     const selection = timeline.querySelector(".precut-selection");
     const waveCanvas = timeline.querySelector(".precut-wave");
+    const inOffscreenIndicator = timeline.querySelector(".precut-offscreen-indicator.left");
+    const outOffscreenIndicator = timeline.querySelector(".precut-offscreen-indicator.right");
     const inHandle = timeline.querySelector(".precut-handle.in");
     const outHandle = timeline.querySelector(".precut-handle.out");
     const navigator = timeline.querySelector(".precut-navigator");
@@ -1008,11 +1064,11 @@ app.registerExtension({
     fileInput.type = "file";
     fileInput.accept = ".mp4,.mov,.mkv,.webm,.gif,.avi,.m4v,.mp3,.wav,.flac,.ogg,.m4a,.aac,.opus,video/*,audio/*";
 
-    const firstBtn = makeButton("first", "Go to IN - Up arrow. Double-click: go to timeline start.", icons.first, () => seekFrame(state.in_frame));
+    const firstBtn = makeButton("first", "Go to IN - Up arrow. Double-click: go to timeline start.", icons.first, () => seekFrame(state.in_frame, { centerIfOutside: true }));
     const prevBtn = makeButton("prev", "Previous frame - Left arrow", icons.prev, () => seekFrame(currentFrame() - 1, { scrubAudio: true }));
     const playBtn = makeButton("play", "Play / stop - Space", icons.play, () => togglePlay());
     const nextBtn = makeButton("next", "Next frame - Right arrow", icons.next, () => seekFrame(currentFrame() + 1, { scrubAudio: true }));
-    const lastBtn = makeButton("last", "Go to OUT - Down arrow. Double-click: go to timeline end.", icons.last, () => seekFrame(state.out_frame));
+    const lastBtn = makeButton("last", "Go to OUT - Down arrow. Double-click: go to timeline end.", icons.last, () => seekFrame(state.out_frame, { centerIfOutside: true }));
     const loadFileBtn = makeButton(
       "load precut-load",
       "Load a video or audio file from disk.",
@@ -1028,18 +1084,18 @@ app.registerExtension({
     const helpBtn = makeButton("precut-help", "Shortcuts", "?", () => {
       shortcutsPanel.classList.toggle("open");
     });
-    const fullscreenBtn = makeButton("precut-fullscreen", "Fullscreen", icons.fullscreen, () => toggleFullscreen());
+    const fullscreenBtn = makeButton("precut-fullscreen", "Fullscreen - F", icons.fullscreen, () => toggleFullscreen());
     const markInBtn = makeButton("mark mark-in", "Mark IN at playhead - I. Double-click: mark IN at first frame.", "IN", () => markIn());
     const markOutBtn = makeButton("mark mark-out", "Mark OUT at playhead - O. Double-click: mark OUT at last frame.", "OUT", () => markOut());
     const readout = document.createElement("div");
     readout.className = "precut-readout";
-    readout.title = "Current playhead timecode. Type a timecode and press Enter to jump.";
     const playheadInput = document.createElement("input");
     playheadInput.className = "precut-playhead-timecode";
     playheadInput.type = "text";
     playheadInput.spellcheck = false;
     playheadInput.inputMode = "numeric";
     playheadInput.maxLength = 11;
+    playheadInput.title = "Current playhead timecode. Type a timecode and press Enter to jump.";
     const tcLabel = document.createElement("div");
     tcLabel.className = "precut-readout-label";
     tcLabel.textContent = "TC";
@@ -1050,6 +1106,7 @@ app.registerExtension({
     divider.className = "precut-readout-line";
     const rangeReadout = document.createElement("div");
     rangeReadout.className = "precut-range-readout";
+    rangeReadout.title = "Selected IN to OUT duration.";
     readout.append(tcLabel, playheadInput, divider, ioLabel, rangeReadout);
     const loopBtn = makeButton("loop", "Loop IN to OUT - Shift", icons.loop, () => toggleLoop());
     const logo = document.createElement("div");
@@ -1067,10 +1124,11 @@ app.registerExtension({
     shortcutsPanel.innerHTML = `
       <h4>Shortcuts</h4>
       <div><kbd>Space</kbd><span>Play / stop</span></div>
-      <div><kbd>J</kbd><span>Reverse 1x / 2x / 4x / 8x</span></div>
+      <div><kbd>J</kbd><span>Reverse 1x / 2x / 4x / 8x / 16x</span></div>
       <div><kbd>K</kbd><span>Stop shuttle / play</span></div>
-      <div><kbd>L</kbd><span>Forward 1x / 2x / 4x / 8x</span></div>
+      <div><kbd>L</kbd><span>Forward 1x / 2x / 4x / 8x / 16x</span></div>
       <div><kbd>Shift</kbd><span>Loop IN / OUT</span></div>
+      <div><kbd>F</kbd><span>Fullscreen</span></div>
       <div><kbd>+</kbd><span>Zoom in at playhead</span></div>
       <div><kbd>-</kbd><span>Zoom out at playhead</span></div>
       <div><kbd>I / O</kbd><span>Mark IN / OUT</span></div>
@@ -1248,7 +1306,7 @@ app.registerExtension({
       }
       root.classList.toggle("fullscreen", fullscreenActive);
       fullscreenBtn.innerHTML = fullscreenActive ? icons.fullscreenExit : icons.fullscreen;
-      fullscreenBtn.title = fullscreenActive ? "Exit fullscreen" : "Fullscreen";
+      fullscreenBtn.title = fullscreenActive ? "Exit fullscreen - F" : "Fullscreen - F";
       document.body.style.overflow = fullscreenActive ? "hidden" : fullscreenBodyOverflow;
       shortcutsPanel.classList.remove("open");
       syncWidgetSize(false);
@@ -1288,6 +1346,7 @@ app.registerExtension({
       shuttleDirection = 0;
       shuttleStep = 0;
       reverseFrame += 1;
+      stopReverseAudio();
       video.playbackRate = 1;
       video.pause();
       updatePlayButton();
@@ -1300,13 +1359,90 @@ app.registerExtension({
       markWaveformDirty();
     }
 
+    function frameIsVisible(frame) {
+      const [start, end] = visibleRange();
+      return frame >= start && frame <= end;
+    }
+
     function seekFrame(frame, options = {}) {
       frame = Math.max(0, Math.min(state.frame_count - 1, Math.round(frame)));
+      const shouldCenter = options.center || (options.centerIfOutside && !frameIsVisible(frame));
       video.currentTime = frameToSeconds(frame);
-      if (options.center) centerTimelineOnFrame(frame);
+      if (shouldCenter) centerTimelineOnFrame(frame);
       else ensurePlayheadVisible();
       render();
       if (options.scrubAudio) playFrameAudio(frame);
+    }
+
+    function stopReverseAudio() {
+      reverseAudioToken += 1;
+      if (!reverseAudioSource) return;
+      try {
+        reverseAudioSource.stop();
+      } catch {}
+      reverseAudioSource.disconnect();
+      reverseAudioSource = null;
+    }
+
+    async function reverseAudioData() {
+      const source = video.currentSrc || video.src;
+      if (!source || state.media_type === "inputs") return null;
+      if (reverseAudioBuffer && reverseAudioKey === source) return reverseAudioBuffer;
+      if (reverseAudioLoading && reverseAudioKey === source) return reverseAudioLoading;
+
+      reverseAudioKey = source;
+      reverseAudioBuffer = null;
+      reverseAudioLoading = (async () => {
+        reverseAudioContext ||= new (window.AudioContext || window.webkitAudioContext)();
+        const response = await fetch(source);
+        const data = await response.arrayBuffer();
+        const decoded = await reverseAudioContext.decodeAudioData(data.slice(0));
+        const reversed = reverseAudioContext.createBuffer(
+          decoded.numberOfChannels,
+          decoded.length,
+          decoded.sampleRate
+        );
+        for (let channel = 0; channel < decoded.numberOfChannels; channel++) {
+          const input = decoded.getChannelData(channel);
+          const output = reversed.getChannelData(channel);
+          for (let left = 0, right = input.length - 1; right >= 0; left++, right--) {
+            output[left] = input[right];
+          }
+        }
+        reverseAudioBuffer = reversed;
+        reverseAudioLoading = null;
+        return reversed;
+      })().catch(() => {
+        reverseAudioLoading = null;
+        return null;
+      });
+      return reverseAudioLoading;
+    }
+
+    function playReverseAudio(speed, token) {
+      stopReverseAudio();
+      reverseAudioToken = token;
+      const data = reverseAudioData();
+      reverseAudioContext?.resume?.();
+      data.then((buffer) => {
+        if (!buffer || reverseAudioToken !== token || shuttleDirection !== -1) return;
+        reverseAudioContext.resume?.();
+        const source = reverseAudioContext.createBufferSource();
+        const startAt = Math.max(0, Math.min(buffer.duration, buffer.duration - video.currentTime));
+        source.buffer = buffer;
+        source.playbackRate.value = speed;
+        source.connect(reverseAudioContext.destination);
+        source.onended = () => {
+          if (reverseAudioSource === source) reverseAudioSource = null;
+        };
+        reverseAudioSource = source;
+        try {
+          source.start(0, startAt);
+        } catch {
+          source.disconnect();
+          if (reverseAudioSource === source) reverseAudioSource = null;
+        }
+      });
     }
 
     function playFrameAudio(frame) {
@@ -1316,6 +1452,39 @@ app.registerExtension({
       clearTimeout(scrubAudioTimer);
       const wasPaused = video.paused;
       const rate = video.playbackRate;
+      if (wasPaused) {
+        const source = video.currentSrc || video.src;
+        if (!source) return;
+        const scrubTime = frameToSeconds(frame);
+        scrubAudio.pause();
+        if (scrubAudio.src !== source) scrubAudio.src = source;
+        const stopPausedScrub = () => {
+          if (scrubAudioToken !== token) return;
+          scrubAudio.pause();
+          scrubAudio.currentTime = scrubTime;
+          video.pause();
+          video.currentTime = scrubTime;
+          render();
+        };
+        const startPausedScrub = () => {
+          if (scrubAudioToken !== token) return;
+          scrubAudio.currentTime = scrubTime;
+          scrubAudio.playbackRate = 1;
+          scrubAudio.play().then(() => {
+            scrubAudioTimer = setTimeout(stopPausedScrub, Math.max(28, (1.5 / state.fps) * 1000));
+          }).catch(() => {
+            video.pause();
+            video.currentTime = scrubTime;
+          });
+        };
+        if (scrubAudio.readyState < 1) {
+          scrubAudio.addEventListener("loadedmetadata", startPausedScrub, { once: true });
+          scrubAudio.load();
+        } else {
+          startPausedScrub();
+        }
+        return;
+      }
       video.playbackRate = 1;
       video.currentTime = frameToSeconds(frame);
       const stopAt = Math.min(duration(), frameToSeconds(frame + 1.5));
@@ -1520,17 +1689,83 @@ app.registerExtension({
         .join("");
     }
 
-    function renderNavigator() {
+    function navigatorMetrics() {
       const total = Math.max(1, state.frame_count - 1);
       const [start, end] = visibleRange();
+      const track = navigatorTrackMetrics();
+      const { trackLeft, trackWidth } = track;
+      const visible = Math.max(1, end - start);
+      const maxStart = Math.max(0, total - visible);
+      const rect = navigatorVisualRange(start, end, total, trackWidth);
+      const visualLeft = trackLeft + rect.left;
+      const visualWidth = rect.width;
+      const maxVisualLeft = rect.maxLeft;
+      return { total, start, end, ...track, visualLeft, visualWidth, visible, maxStart, maxVisualLeft };
+    }
+
+    function navigatorVisualRange(start, end, total, trackWidth) {
+      const visible = Math.max(1, end - start);
+      const minWidth = Math.min(MIN_NAV_WINDOW_WIDTH, trackWidth);
+      const currentZoom = Math.max(1, Math.min(MAX_ZOOM, total / visible));
+      const zoomProgress = MAX_ZOOM <= 1 ? 1 : (currentZoom - 1) / (MAX_ZOOM - 1);
+      const width = Math.max(minWidth, trackWidth - (trackWidth - minWidth) * zoomProgress);
+      const maxStart = Math.max(0, total - visible);
+      const maxLeft = Math.max(0, trackWidth - width);
+      const left = thumbLeftFromRangeStart(start, maxStart, maxLeft);
+      return { left, width, right: left + width, maxLeft };
+    }
+
+    function rangeEndFromVisualRight(start, visualRight, total, trackWidth) {
+      const target = Math.max(0, Math.min(trackWidth, visualRight));
+      let low = Math.min(total, start + 1);
+      let high = total;
+      for (let i = 0; i < 24; i++) {
+        const mid = (low + high) / 2;
+        const right = navigatorVisualRange(start, mid, total, trackWidth).right;
+        if (right < target) low = mid;
+        else high = mid;
+      }
+      return Math.max(start + 1, Math.min(total, high));
+    }
+
+    function rangeStartFromThumbLeftEdge(end, visualLeft, total, trackWidth) {
+      const target = Math.max(0, Math.min(trackWidth, visualLeft));
+      let low = 0;
+      let high = Math.max(0, end - 1);
+      for (let i = 0; i < 24; i++) {
+        const mid = (low + high) / 2;
+        const left = navigatorVisualRange(mid, end, total, trackWidth).left;
+        if (left < target) low = mid;
+        else high = mid;
+      }
+      return Math.max(0, Math.min(end - 1, high));
+    }
+
+    function navigatorTrackMetrics() {
       const rect = navigator.getBoundingClientRect();
-      const width = Math.max(1, rect.width);
-      const leftPx = (start / total) * width;
-      const rightPx = (end / total) * width;
-      const actualWidth = Math.max(1, rightPx - leftPx);
-      const visualWidth = Math.min(width, Math.max(MIN_NAV_WINDOW_WIDTH, actualWidth));
-      const centerPx = (leftPx + rightPx) / 2;
-      const visualLeft = Math.max(0, Math.min(width - visualWidth, centerPx - visualWidth / 2));
+      const borderLeft = navigator.clientLeft || 0;
+      const width = Math.max(1, navigator.clientWidth || Math.floor(rect.width));
+      const trackLeft = 0;
+      const trackWidth = width;
+      return { rect, borderLeft, width, trackLeft, trackWidth };
+    }
+
+    function navigatorLocalX(event, metrics = navigatorTrackMetrics()) {
+      return Math.max(0, Math.min(metrics.width, event.clientX - metrics.rect.left - metrics.borderLeft));
+    }
+
+    function thumbLeftFromRangeStart(start, maxStart, maxVisualLeft) {
+      if (maxStart <= 0 || maxVisualLeft <= 0) return 0;
+      return Math.max(0, Math.min(maxVisualLeft, (start / maxStart) * maxVisualLeft));
+    }
+
+    function rangeStartFromThumbLeft(visualLeft, maxStart, maxVisualLeft) {
+      if (maxStart <= 0 || maxVisualLeft <= 0) return 0;
+      return Math.max(0, Math.min(maxStart, (visualLeft / maxVisualLeft) * maxStart));
+    }
+
+    function renderNavigator() {
+      const { visualLeft, visualWidth } = navigatorMetrics();
       navWindow.style.left = `${visualLeft}px`;
       navWindow.style.width = `${visualWidth}px`;
       navLeft.style.left = `${visualLeft}px`;
@@ -1655,6 +1890,7 @@ app.registerExtension({
     function render() {
       state.in_frame = Math.max(0, Math.min(state.in_frame, state.frame_count - 1));
       state.out_frame = Math.max(state.in_frame, Math.min(state.out_frame, state.frame_count - 1));
+      const [visibleStart, visibleEnd] = visibleRange();
       const inPct = frameToPct(state.in_frame);
       const outPct = frameToPct(state.out_frame);
       const headPct = frameToPct(currentFrame());
@@ -1675,10 +1911,12 @@ app.registerExtension({
       timeline.style.setProperty("--in-label-top", "28px");
       timeline.style.setProperty("--out-label-top", "calc(100% - 50px)");
       timeline.style.setProperty("--playhead", `${headPct}%`);
+      inOffscreenIndicator.classList.toggle("visible", state.in_frame < visibleStart);
+      outOffscreenIndicator.classList.toggle("visible", state.out_frame > visibleEnd);
       if (document.activeElement !== playheadInput) {
         playheadInput.value = fmtTime(frameToSeconds(currentFrame()), state.fps);
       }
-      const speed = shuttleDirection ? [1, 2, 4, 8][shuttleStep] : (video.paused ? 1 : video.playbackRate || 1);
+      const speed = shuttleDirection ? SHUTTLE_SPEEDS[shuttleStep] : (video.paused ? 1 : video.playbackRate || 1);
       speedReadout.textContent = `${speed}x`;
       speedReadout.classList.toggle("visible", speed > 1);
       rangeReadout.textContent = fmtTime((state.out_frame - state.in_frame + 1) / state.fps, state.fps);
@@ -1704,6 +1942,9 @@ app.registerExtension({
 
     function hydrateVideo() {
       if (!state.video_url) return;
+      stopReverseAudio();
+      reverseAudioBuffer = null;
+      reverseAudioKey = "";
       video.src = api.apiURL(state.video_url);
       video.load();
       loadWaveform();
@@ -1764,6 +2005,9 @@ app.registerExtension({
       if (mediaType === "audio") {
         setPlaceholder(`Audio loaded: ${result.name}`, "audio");
       }
+      stopReverseAudio();
+      reverseAudioBuffer = null;
+      reverseAudioKey = "";
       video.src = URL.createObjectURL(file);
       video.load();
       await loadWaveform();
@@ -1879,6 +2123,7 @@ app.registerExtension({
       shuttleDirection = 0;
       shuttleStep = 0;
       reverseFrame += 1;
+      stopReverseAudio();
       video.playbackRate = 1;
       if (video.paused) {
         video.play();
@@ -1890,13 +2135,14 @@ app.registerExtension({
     function shuttleForward() {
       if (!state.video_url) return;
       if (shuttleDirection === 1) {
-        shuttleStep = Math.min(3, shuttleStep + 1);
+        shuttleStep = Math.min(SHUTTLE_SPEEDS.length - 1, shuttleStep + 1);
       } else {
         shuttleDirection = 1;
         shuttleStep = 0;
       }
       reverseFrame += 1;
-      video.playbackRate = [1, 2, 4, 8][shuttleStep];
+      stopReverseAudio();
+      video.playbackRate = SHUTTLE_SPEEDS[shuttleStep];
       video.play();
       updatePlayButton();
       render();
@@ -1905,29 +2151,53 @@ app.registerExtension({
     function shuttleReverse() {
       if (!state.video_url) return;
       if (shuttleDirection === -1) {
-        shuttleStep = Math.min(3, shuttleStep + 1);
+        shuttleStep = Math.min(SHUTTLE_SPEEDS.length - 1, shuttleStep + 1);
       } else {
         shuttleDirection = -1;
         shuttleStep = 0;
       }
       video.pause();
-      const speed = [1, 2, 4, 8][shuttleStep];
+      video.playbackRate = 1;
+      const speed = SHUTTLE_SPEEDS[shuttleStep];
       const token = reverseFrame + 1;
       reverseFrame = token;
-      reverseLastTime = performance.now();
-      const step = (now) => {
+      playReverseAudio(speed, token);
+      const minFrameSeconds = 1 / Math.max(1, state.fps || 24);
+      const maxStepSeconds = minFrameSeconds * Math.max(1, speed);
+      let reverseBaseTime = Math.max(0, video.currentTime);
+      let reverseStartTime = performance.now();
+      let pendingSeek = false;
+      let lastTarget = reverseBaseTime;
+      const step = (now = performance.now()) => {
         if (reverseFrame !== token || shuttleDirection !== -1) return;
-        const delta = Math.min(0.05, Math.max(0, (now - reverseLastTime) / 1000));
-        reverseLastTime = now;
-        const next = Math.max(0, video.currentTime - delta * speed);
-        video.currentTime = next;
-        if (next <= 0) {
+        if (pendingSeek) return;
+        const elapsed = Math.max(0, (now - reverseStartTime) / 1000);
+        const target = Math.max(0, reverseBaseTime - elapsed * speed);
+        const next = Math.max(0, Math.min(lastTarget - minFrameSeconds, target, video.currentTime - minFrameSeconds));
+        if (video.currentTime <= minFrameSeconds || next <= 0) {
+          video.currentTime = 0;
           stopShuttle();
           return;
         }
-        ensurePlayheadVisible();
-        scheduleRender();
-        requestAnimationFrame(step);
+        pendingSeek = true;
+        lastTarget = Math.max(0, next);
+        let seekFinished = false;
+        const finishSeek = () => {
+          if (seekFinished) return;
+          seekFinished = true;
+          if (reverseFrame !== token || shuttleDirection !== -1) return;
+          pendingSeek = false;
+          ensurePlayheadVisible();
+          scheduleRender();
+          requestAnimationFrame(step);
+        };
+        video.addEventListener("seeked", finishSeek, { once: true });
+        video.currentTime = lastTarget;
+        reverseBaseTime = lastTarget;
+        reverseStartTime = now;
+        if (Math.abs(video.currentTime - lastTarget) < minFrameSeconds / 2) {
+          setTimeout(finishSeek, Math.max(8, Math.min(32, (maxStepSeconds / speed) * 1000)));
+        }
       };
       requestAnimationFrame(step);
       updatePlayButton();
@@ -1938,8 +2208,12 @@ app.registerExtension({
       const active = !loopBtn.classList.contains("active");
       loopBtn.classList.toggle("active", active);
       if (active && state.video_url) {
+        if (!frameIsVisible(state.in_frame)) {
+          centerTimelineOnFrame(state.in_frame);
+          scheduleRender();
+        }
         if (currentFrame() < state.in_frame || currentFrame() > state.out_frame) {
-          seekFrame(state.in_frame);
+          seekFrame(state.in_frame, { centerIfOutside: true });
         }
         video.play();
       }
@@ -1968,7 +2242,7 @@ app.registerExtension({
     video.addEventListener("timeupdate", () => {
       if (!video.paused && loopBtn.classList.contains("active")) {
         if (currentFrame() > state.out_frame) {
-          seekFrame(state.in_frame);
+          seekFrame(state.in_frame, { centerIfOutside: true });
           video.play();
         }
       }
@@ -2052,12 +2326,12 @@ app.registerExtension({
     firstBtn.addEventListener("dblclick", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      seekFrame(0);
+      seekFrame(0, { centerIfOutside: true });
     });
     lastBtn.addEventListener("dblclick", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      seekFrame(state.frame_count - 1);
+      seekFrame(state.frame_count - 1, { centerIfOutside: true });
     });
     markInBtn.addEventListener("dblclick", (event) => {
       event.preventDefault();
@@ -2192,12 +2466,12 @@ app.registerExtension({
         timeline.style.cursor = "grabbing";
         scheduleRender();
       } else {
-        if (nearPlayhead(event)) {
+        if (rangeLabelHit(event)) {
+          timeline.style.cursor = "move";
+        } else if (nearPlayhead(event)) {
           timeline.style.cursor = "crosshair";
         } else if (inTimecodeZone(event)) {
           timeline.style.cursor = "crosshair";
-        } else if (rangeLabelHit(event)) {
-          timeline.style.cursor = "move";
         } else if (nearestRangeEdge(event)) {
           timeline.style.cursor = "ew-resize";
         } else {
@@ -2210,13 +2484,13 @@ app.registerExtension({
       if (event.target.closest(".precut-navigator")) return;
       activePrecutDrag = true;
       hoverFrame = frameFromEvent(event);
-      if (nearPlayhead(event) || inTimecodeZone(event)) {
-        dragging = "playhead";
-        seekFrame(hoverFrame);
-      } else if (rangeLabelHit(event)) {
+      if (rangeLabelHit(event)) {
         dragging = "range";
         rangeDragOffset = hoverFrame - state.in_frame;
         timeline.style.cursor = "move";
+      } else if (nearPlayhead(event) || inTimecodeZone(event)) {
+        dragging = "playhead";
+        seekFrame(hoverFrame);
       } else {
         dragging = nearestRangeEdge(event);
         if (dragging) {
@@ -2254,8 +2528,12 @@ app.registerExtension({
     window.addEventListener("mousemove", (event) => resetPrecutCanvasDrag(event), true);
 
     function navFrameFromEvent(event) {
-      const rect = navigator.getBoundingClientRect();
-      const pct = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
+      const metrics = navigatorTrackMetrics();
+      return navFrameFromLocalX(navigatorLocalX(event, metrics), metrics);
+    }
+
+    function navFrameFromLocalX(localX, metrics = navigatorTrackMetrics()) {
+      const pct = Math.max(0, Math.min(1, (localX - metrics.trackLeft) / metrics.trackWidth));
       return pct * Math.max(1, state.frame_count - 1);
     }
 
@@ -2266,23 +2544,49 @@ app.registerExtension({
         return;
       }
       activePrecutDrag = true;
-      const [start, end] = visibleRange();
-      const total = Math.max(1, state.frame_count - 1);
+      const metrics = navigatorMetrics();
+      const { start, end, total, trackLeft, visualLeft, visualWidth, maxStart, maxVisualLeft } = metrics;
       const frame = navFrameFromEvent(event);
       const visible = end - start;
+      const localX = navigatorLocalX(event, metrics);
+      const overVisualWindow = localX >= visualLeft && localX <= visualLeft + visualWidth;
       if (event.target === navLeft) {
-        navDragging = { mode: "left", start, end };
+        navDragging = {
+          mode: "left",
+          start,
+          end,
+          pointerOffsetPx: localX - visualLeft,
+        };
       } else if (event.target === navRight) {
-        navDragging = { mode: "right", start, end };
-      } else if (frame >= start && frame <= end) {
-        navDragging = { mode: "window", start, end, offset: frame - start };
+        navDragging = {
+          mode: "right",
+          start,
+          end,
+          pointerOffsetPx: localX - (visualLeft + visualWidth),
+        };
+      } else if (overVisualWindow) {
+        navDragging = {
+          mode: "window",
+          start,
+          end,
+          visualLeft,
+          visualWidth,
+          pointerOffsetPx: localX - visualLeft,
+        };
         navigator.style.cursor = "grabbing";
       } else {
         const nextStart = Math.max(0, Math.min(total - visible, frame - visible / 2));
         setVisibleRange(nextStart, nextStart + visible);
         markWaveformDirty();
         scheduleRender();
-        navDragging = { mode: "window", start: nextStart, end: nextStart + visible, offset: visible / 2 };
+        const nextVisualLeft = trackLeft + thumbLeftFromRangeStart(nextStart, maxStart, maxVisualLeft);
+        navDragging = {
+          mode: "window",
+          start: nextStart,
+          end: nextStart + visible,
+          visualWidth,
+          pointerOffsetPx: Math.max(0, Math.min(visualWidth, localX - nextVisualLeft)),
+        };
         navigator.style.cursor = "grabbing";
       }
       event.preventDefault();
@@ -2299,14 +2603,25 @@ app.registerExtension({
     window.addEventListener("mousemove", (event) => {
       if (!navDragging) return;
       const total = Math.max(1, state.frame_count - 1);
-      const frame = navFrameFromEvent(event);
       const visible = navDragging.end - navDragging.start;
       if (navDragging.mode === "left") {
-        setVisibleRange(Math.min(frame, navDragging.end - 1), navDragging.end);
+        const metrics = navigatorTrackMetrics();
+        const edge = navigatorLocalX(event, metrics) - navDragging.pointerOffsetPx - metrics.trackLeft;
+        const start = rangeStartFromThumbLeftEdge(navDragging.end, edge, total, metrics.trackWidth);
+        setVisibleRange(start, navDragging.end);
       } else if (navDragging.mode === "right") {
-        setVisibleRange(navDragging.start, Math.max(frame, navDragging.start + 1));
+        const metrics = navigatorTrackMetrics();
+        const edge = navigatorLocalX(event, metrics) - navDragging.pointerOffsetPx - metrics.trackLeft;
+        const end = rangeEndFromVisualRight(navDragging.start, edge, total, metrics.trackWidth);
+        setVisibleRange(navDragging.start, end);
       } else {
-        const start = Math.max(0, Math.min(total - visible, frame - navDragging.offset));
+        const metrics = navigatorTrackMetrics();
+        const { trackLeft, trackWidth } = metrics;
+        const localX = navigatorLocalX(event, metrics);
+        const maxVisualLeft = Math.max(0, trackWidth - navDragging.visualWidth);
+        const visualOffset = Math.max(0, Math.min(maxVisualLeft, localX - trackLeft - navDragging.pointerOffsetPx));
+        const maxStart = Math.max(0, total - visible);
+        const start = rangeStartFromThumbLeft(visualOffset, maxStart, maxVisualLeft);
         setVisibleRange(start, start + visible);
       }
       markWaveformDirty();
@@ -2329,7 +2644,7 @@ app.registerExtension({
       if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
 
       const key = event.key.toLowerCase();
-      const handled = ["i", "o", "j", "k", "l", "+", "=", "-", "_", "shift", "escape", "arrowdown", "arrowup", "arrowleft", "arrowright"].includes(key) || event.code === "Space";
+      const handled = ["i", "o", "f", "j", "k", "l", "+", "=", "-", "_", "shift", "escape", "arrowdown", "arrowup", "arrowleft", "arrowright"].includes(key) || event.code === "Space";
       if (handled) {
         event.preventDefault();
         event.stopPropagation();
@@ -2340,14 +2655,16 @@ app.registerExtension({
         markIn();
       } else if (key === "o") {
         markOut();
+      } else if (key === "f") {
+        toggleFullscreen(!fullscreenActive);
       } else if (event.key === "Escape" && fullscreenActive) {
         toggleFullscreen(false);
       } else if (event.key === "Shift" && !event.repeat) {
         toggleLoop();
       } else if (event.key === "ArrowDown") {
-        seekFrame(doublePressArrow("down") ? state.frame_count - 1 : state.out_frame);
+        seekFrame(doublePressArrow("down") ? state.frame_count - 1 : state.out_frame, { centerIfOutside: true });
       } else if (event.key === "ArrowUp") {
-        seekFrame(doublePressArrow("up") ? 0 : state.in_frame);
+        seekFrame(doublePressArrow("up") ? 0 : state.in_frame, { centerIfOutside: true });
       } else if (event.key === "ArrowLeft") {
         lastArrowJumpKey = "";
         seekFrame(currentFrame() - 1, { scrubAudio: true });

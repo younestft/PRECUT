@@ -123,6 +123,8 @@ function css() {
       border: 1px solid #0e1011;
       border-radius: 7px;
       background: #0e1012;
+      user-select: none;
+      -webkit-user-select: none;
     }
     .precut-video video {
       width: 100%;
@@ -130,6 +132,9 @@ function css() {
       object-fit: contain;
       display: block;
       background: #090a0b;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-user-drag: none;
     }
     .precut-video video::-internal-media-controls-cast-button,
     .precut-video video::-webkit-media-controls-cast-button,
@@ -207,6 +212,8 @@ function css() {
       font-size: 13px;
       background: linear-gradient(135deg, #252b31, #101418 52%, #263128);
       text-align: center;
+      user-select: none;
+      -webkit-user-select: none;
     }
     .precut-placeholder svg {
       width: clamp(42px, 10cqw, 118px);
@@ -502,6 +509,8 @@ function css() {
       transition: transform 90ms ease, filter 90ms ease, box-shadow 120ms ease, border-color 120ms ease;
       overflow: hidden;
       box-sizing: border-box;
+      user-select: none;
+      -webkit-user-select: none;
     }
     .precut-btn:hover {
       border-color: #5b6269;

@@ -423,7 +423,7 @@ function css() {
       bottom: 0;
       height: 18px;
       box-sizing: border-box;
-      overflow: hidden;
+      overflow: visible;
       border-radius: 999px;
       background: #373737;
       border: 1px solid rgba(255,255,255,.12);
@@ -456,13 +456,13 @@ function css() {
       box-sizing: border-box;
       cursor: ew-resize;
       z-index: 2;
+      transform: translateX(-50%);
     }
     .precut-nav-handle.left {
       left: 0;
     }
     .precut-nav-handle.right {
       left: 0;
-      transform: translateX(-100%);
     }
     .precut-controls {
       display: flex;
@@ -1702,11 +1702,10 @@ app.registerExtension({
       const total = Math.max(1, state.frame_count - 1);
       const [start, end] = visibleRange();
       const track = navigatorTrackMetrics();
-      const { trackLeft, trackWidth } = track;
       const visible = Math.max(1, end - start);
       const maxStart = Math.max(0, total - visible);
-      const rect = navigatorVisualRange(start, end, total, trackWidth);
-      const visualLeft = trackLeft + rect.left;
+      const rect = navigatorVisualRange(start, end, total, track.trackWidth);
+      const visualLeft = rect.left;
       const visualWidth = rect.width;
       const maxVisualLeft = rect.maxLeft;
       return { total, start, end, ...track, visualLeft, visualWidth, visible, maxStart, maxVisualLeft };
@@ -1717,7 +1716,7 @@ app.registerExtension({
       const minWidth = Math.min(MIN_NAV_WINDOW_WIDTH, trackWidth);
       const currentZoom = Math.max(1, Math.min(MAX_ZOOM, total / visible));
       const zoomProgress = MAX_ZOOM <= 1 ? 1 : (currentZoom - 1) / (MAX_ZOOM - 1);
-      const width = Math.max(minWidth, trackWidth - (trackWidth - minWidth) * zoomProgress);
+      const width = Math.min(trackWidth, Math.max(minWidth, trackWidth - (trackWidth - minWidth) * zoomProgress));
       const maxStart = Math.max(0, total - visible);
       const maxLeft = Math.max(0, trackWidth - width);
       const left = thumbLeftFromRangeStart(start, maxStart, maxLeft);
@@ -1755,12 +1754,16 @@ app.registerExtension({
       const borderLeft = navigator.clientLeft || 0;
       const width = Math.max(1, navigator.clientWidth || Math.floor(rect.width));
       const trackLeft = 0;
-      const trackWidth = width;
+      const trackWidth = Math.max(1, width);
       return { rect, borderLeft, width, trackLeft, trackWidth };
     }
 
-    function navigatorLocalX(event, metrics = navigatorTrackMetrics()) {
-      return Math.max(0, Math.min(metrics.width, event.clientX - metrics.rect.left - metrics.borderLeft));
+    function navigatorDragEventX(event, metrics = navigatorTrackMetrics()) {
+      return event.clientX - metrics.rect.left - metrics.borderLeft;
+    }
+
+    function clampNavigatorX(x, metrics = navigatorTrackMetrics()) {
+      return Math.max(0, Math.min(metrics.trackWidth, x));
     }
 
     function thumbLeftFromRangeStart(start, maxStart, maxVisualLeft) {
@@ -2536,17 +2539,12 @@ app.registerExtension({
     }, true);
     window.addEventListener("mousemove", (event) => resetPrecutCanvasDrag(event), true);
 
-    function navFrameFromEvent(event) {
-      const metrics = navigatorTrackMetrics();
-      return navFrameFromLocalX(navigatorLocalX(event, metrics), metrics);
-    }
-
     function navFrameFromLocalX(localX, metrics = navigatorTrackMetrics()) {
       const pct = Math.max(0, Math.min(1, (localX - metrics.trackLeft) / metrics.trackWidth));
       return pct * Math.max(1, state.frame_count - 1);
     }
 
-    navigator.addEventListener("mousedown", (event) => {
+    function beginNavigatorDrag(event) {
       if (event.detail > 1) {
         event.preventDefault();
         event.stopPropagation();
@@ -2554,10 +2552,10 @@ app.registerExtension({
       }
       activePrecutDrag = true;
       const metrics = navigatorMetrics();
-      const { start, end, total, trackLeft, visualLeft, visualWidth, maxStart, maxVisualLeft } = metrics;
-      const frame = navFrameFromEvent(event);
+      const { start, end, total, visualLeft, visualWidth, maxStart, maxVisualLeft } = metrics;
+      const localX = clampNavigatorX(navigatorDragEventX(event, metrics), metrics);
+      const frame = navFrameFromLocalX(localX, metrics);
       const visible = end - start;
-      const localX = navigatorLocalX(event, metrics);
       const overVisualWindow = localX >= visualLeft && localX <= visualLeft + visualWidth;
       if (event.target === navLeft) {
         navDragging = {
@@ -2588,7 +2586,7 @@ app.registerExtension({
         setVisibleRange(nextStart, nextStart + visible);
         markWaveformDirty();
         scheduleRender();
-        const nextVisualLeft = trackLeft + thumbLeftFromRangeStart(nextStart, maxStart, maxVisualLeft);
+        const nextVisualLeft = thumbLeftFromRangeStart(nextStart, maxStart, maxVisualLeft);
         navDragging = {
           mode: "window",
           start: nextStart,
@@ -2600,7 +2598,37 @@ app.registerExtension({
       }
       event.preventDefault();
       event.stopPropagation();
-    });
+    }
+
+    function updateNavigatorDrag(event) {
+      if (!navDragging) return;
+      const total = Math.max(1, state.frame_count - 1);
+      const visible = navDragging.end - navDragging.start;
+      if (navDragging.mode === "left") {
+        const metrics = navigatorTrackMetrics();
+        const edge = navigatorDragEventX(event, metrics) - navDragging.pointerOffsetPx;
+        const start = rangeStartFromThumbLeftEdge(navDragging.end, edge, total, metrics.trackWidth);
+        setVisibleRange(start, navDragging.end);
+      } else if (navDragging.mode === "right") {
+        const metrics = navigatorTrackMetrics();
+        const edge = navigatorDragEventX(event, metrics) - navDragging.pointerOffsetPx;
+        const end = rangeEndFromVisualRight(navDragging.start, edge, total, metrics.trackWidth);
+        setVisibleRange(navDragging.start, end);
+      } else {
+        const metrics = navigatorTrackMetrics();
+        const { trackWidth } = metrics;
+        const localX = navigatorDragEventX(event, metrics);
+        const maxVisualLeft = Math.max(0, trackWidth - navDragging.visualWidth);
+        const visualOffset = Math.max(0, Math.min(maxVisualLeft, localX - navDragging.pointerOffsetPx));
+        const maxStart = Math.max(0, total - visible);
+        const start = rangeStartFromThumbLeft(visualOffset, maxStart, maxVisualLeft);
+        setVisibleRange(start, start + visible);
+      }
+      markWaveformDirty();
+      scheduleRender();
+    }
+
+    navigator.addEventListener("mousedown", beginNavigatorDrag);
 
     navigator.addEventListener("dblclick", (event) => {
       toggleTimelineZoom();
@@ -2610,31 +2638,7 @@ app.registerExtension({
     });
 
     window.addEventListener("mousemove", (event) => {
-      if (!navDragging) return;
-      const total = Math.max(1, state.frame_count - 1);
-      const visible = navDragging.end - navDragging.start;
-      if (navDragging.mode === "left") {
-        const metrics = navigatorTrackMetrics();
-        const edge = navigatorLocalX(event, metrics) - navDragging.pointerOffsetPx - metrics.trackLeft;
-        const start = rangeStartFromThumbLeftEdge(navDragging.end, edge, total, metrics.trackWidth);
-        setVisibleRange(start, navDragging.end);
-      } else if (navDragging.mode === "right") {
-        const metrics = navigatorTrackMetrics();
-        const edge = navigatorLocalX(event, metrics) - navDragging.pointerOffsetPx - metrics.trackLeft;
-        const end = rangeEndFromVisualRight(navDragging.start, edge, total, metrics.trackWidth);
-        setVisibleRange(navDragging.start, end);
-      } else {
-        const metrics = navigatorTrackMetrics();
-        const { trackLeft, trackWidth } = metrics;
-        const localX = navigatorLocalX(event, metrics);
-        const maxVisualLeft = Math.max(0, trackWidth - navDragging.visualWidth);
-        const visualOffset = Math.max(0, Math.min(maxVisualLeft, localX - trackLeft - navDragging.pointerOffsetPx));
-        const maxStart = Math.max(0, total - visible);
-        const start = rangeStartFromThumbLeft(visualOffset, maxStart, maxVisualLeft);
-        setVisibleRange(start, start + visible);
-      }
-      markWaveformDirty();
-      scheduleRender();
+      updateNavigatorDrag(event);
     });
 
     timeline.addEventListener(

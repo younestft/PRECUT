@@ -1,8 +1,10 @@
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -174,6 +176,169 @@ def _load_audio_segment(video_file, start_seconds, duration_seconds):
     return {"waveform": waveform, "sample_rate": sample_rate}
 
 
+def _media_edit(state):
+    edit = state.get("edit")
+    if not isinstance(edit, dict):
+        edit = {}
+    source_width = int(state.get("media_width") or 0)
+    source_height = int(state.get("media_height") or 0)
+    crop_px = edit.get("crop_px")
+    crop = None
+    if isinstance(crop_px, dict) and source_width > 0 and source_height > 0:
+        x_px = max(-source_width * 2, min(source_width * 2 - 2, int(round(float(crop_px.get("x") or 0)))))
+        y_px = max(-source_height * 2, min(source_height * 2 - 2, int(round(float(crop_px.get("y") or 0)))))
+        w_px = max(2, min(source_width * 4, int(round(float(crop_px.get("w") or source_width)))))
+        h_px = max(2, min(source_height * 4, int(round(float(crop_px.get("h") or source_height)))))
+        if x_px != 0 or y_px != 0 or w_px != source_width or h_px != source_height:
+            crop = {"x": x_px, "y": y_px, "w": w_px, "h": h_px}
+    elif isinstance(edit.get("crop"), dict):
+        source_crop = edit.get("crop")
+        x = max(0.0, min(0.98, float(source_crop.get("x") or 0.0)))
+        y = max(0.0, min(0.98, float(source_crop.get("y") or 0.0)))
+        w = max(0.02, min(1.0 - x, float(source_crop.get("w") or 1.0)))
+        h = max(0.02, min(1.0 - y, float(source_crop.get("h") or 1.0)))
+        if x > 0.0001 or y > 0.0001 or w < 0.9999 or h < 0.9999:
+            crop = {
+                "x": int(round(x * source_width)),
+                "y": int(round(y * source_height)),
+                "w": int(round(w * source_width)),
+                "h": int(round(h * source_height)),
+            }
+    scale = max(0.05, min(8.0, float(edit.get("scale") or 1.0)))
+    rotation = float(edit.get("rotation") or 0.0)
+    rotation = ((rotation + 180.0) % 360.0) - 180.0
+    background = str(edit.get("background") or "#000000").strip()
+    if not re.match(r"^#?[0-9a-fA-F]{6}$", background):
+        background = "#000000"
+    background = "#" + background.lstrip("#").upper()
+    return {"crop": crop, "scale": scale, "rotation": rotation, "background": background}
+
+
+def _has_media_edit(edit):
+    return bool(edit["crop"]) or abs(edit["scale"] - 1.0) > 0.0001 or abs(edit["rotation"]) > 0.0001
+
+
+def _process_video_file(video_file, state, start_seconds, duration_seconds):
+    edit = _media_edit(state)
+    if not _has_media_edit(edit):
+        return video_file, start_seconds, duration_seconds
+
+    ffmpeg = _find_ffmpeg()
+    source_width = int(state.get("media_width") or 0)
+    source_height = int(state.get("media_height") or 0)
+    filters = []
+
+    crop = edit["crop"]
+    crop_filter = None
+    has_rotation = abs(edit["rotation"]) > 0.0001
+    background = "0x" + edit["background"].lstrip("#")
+    if crop and source_width > 0 and source_height > 0:
+        crop_w = max(2, int(round(crop["w"])))
+        crop_h = max(2, int(round(crop["h"])))
+        crop_w -= crop_w % 2
+        crop_h -= crop_h % 2
+        crop_x = int(round(crop["x"]))
+        crop_y = int(round(crop["y"]))
+        crop_x -= crop_x % 2
+        crop_y -= crop_y % 2
+        if has_rotation:
+            source_center_x = source_width / 2.0
+            source_center_y = source_height / 2.0
+            half_w = max(source_center_x, source_width - source_center_x, crop_x + crop_w - source_center_x, source_center_x - crop_x)
+            half_h = max(source_center_y, source_height - source_center_y, crop_y + crop_h - source_center_y, source_center_y - crop_y)
+            pad_w = max(source_width, int(math.ceil(half_w * 2.0)))
+            pad_h = max(source_height, int(math.ceil(half_h * 2.0)))
+            pad_w += pad_w % 2
+            pad_h += pad_h % 2
+            pad_x = int(round(pad_w / 2.0 - source_center_x))
+            pad_y = int(round(pad_h / 2.0 - source_center_y))
+            filters.append(f"pad={pad_w}:{pad_h}:{pad_x}:{pad_y}:color={background}")
+            crop_x += pad_x
+            crop_y += pad_y
+        else:
+            pad_left = max(0, -crop_x)
+            pad_top = max(0, -crop_y)
+            pad_right = max(0, crop_x + crop_w - source_width)
+            pad_bottom = max(0, crop_y + crop_h - source_height)
+            if pad_left or pad_top or pad_right or pad_bottom:
+                pad_w = source_width + pad_left + pad_right
+                pad_h = source_height + pad_top + pad_bottom
+                pad_w += pad_w % 2
+                pad_h += pad_h % 2
+                filters.append(f"pad={pad_w}:{pad_h}:{pad_left}:{pad_top}:color={background}")
+                crop_x += pad_left
+                crop_y += pad_top
+        crop_filter = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}"
+
+    if has_rotation and crop_filter:
+        angle = edit["rotation"] * math.pi / 180.0
+        filters.append(f"rotate={angle}:ow=iw:oh=ih:c={background}")
+        filters.append(crop_filter)
+    elif crop_filter:
+        filters.append(crop_filter)
+
+    if abs(edit["scale"] - 1.0) > 0.0001:
+        scale = edit["scale"]
+        filters.append(f"scale=trunc(iw*{scale}/2)*2:trunc(ih*{scale}/2)*2")
+
+    if has_rotation and not crop_filter:
+        angle = edit["rotation"] * math.pi / 180.0
+        filters.append(f"rotate={angle}:ow=rotw({angle}):oh=roth({angle}):c={background}")
+
+    filters.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
+    filters.append("format=yuv420p")
+    stat = os.stat(video_file)
+    cache_payload = json.dumps(
+        {
+            "source": str(video_file),
+            "mtime": stat.st_mtime,
+            "size": stat.st_size,
+            "start": round(start_seconds, 6),
+            "duration": round(duration_seconds, 6),
+            "edit": edit,
+        },
+        sort_keys=True,
+    )
+    cache_key = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()[:24]
+    cache_dir = Path(folder_paths.get_temp_directory()) / "precut_processed"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    output = cache_dir / f"{Path(video_file).stem}_{cache_key}.mp4"
+    if output.exists() and output.stat().st_size > 0:
+        return str(output), 0.0, duration_seconds
+
+    args = [
+        ffmpeg,
+        "-y",
+        "-v",
+        "error",
+        "-ss",
+        str(max(0.0, start_seconds)),
+        "-t",
+        str(max(0.0, duration_seconds)),
+        "-i",
+        video_file,
+        "-vf",
+        ",".join(filters),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-c:v",
+        "libx264",
+        "-c:a",
+        "aac",
+        "-shortest",
+        "-movflags",
+        "+faststart",
+        str(output),
+    ]
+    result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0 or not output.exists() or output.stat().st_size <= 0:
+        message = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"PRECUT failed to process crop/transform output. {message}")
+    return str(output), 0.0, duration_seconds
+
+
 def _trim_video_object(video, start_seconds, duration_seconds):
     as_trimmed = getattr(video, "as_trimmed", None)
     if not callable(as_trimmed):
@@ -299,7 +464,8 @@ class PRECUT:
             loaded_audio = _load_audio_segment(resolved, start_seconds, duration)
             return (None, loaded_audio, None, float(duration))
 
-        video_out = InputImpl.VideoFromFile(resolved, start_time=start_seconds, duration=duration)
+        video_source, video_start, video_duration = _process_video_file(resolved, state, start_seconds, duration)
+        video_out = InputImpl.VideoFromFile(video_source, start_time=video_start, duration=video_duration)
         loaded_audio = _load_audio_segment(resolved, start_seconds, duration)
         return (video_out, loaded_audio, _images_from_video_object(video_out), float(duration))
 

@@ -5,16 +5,88 @@ import re
 import shutil
 import subprocess
 import hashlib
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
 import torch
 
 import folder_paths
+from comfy.utils import ProgressBar
 from comfy_api.latest import ComfyExtension, InputImpl, Types, io
+
+try:
+    import comfy.model_management as comfy_model_management
+except Exception:
+    comfy_model_management = None
 
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".opus"}
+PRECUT_VIDEO_INFO_TYPE = "PRECUT_VIDEO_INFO"
+
+
+def _throw_if_interrupted():
+    if comfy_model_management is not None:
+        comfy_model_management.throw_exception_if_processing_interrupted()
+
+
+def _stop_process(process):
+    if process.poll() is not None:
+        return process.communicate()
+    try:
+        process.terminate()
+        return process.communicate(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        return process.communicate()
+
+
+def _run_interruptible_subprocess(args, cleanup_paths=()):
+    _throw_if_interrupted()
+    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        while True:
+            _throw_if_interrupted()
+            try:
+                stdout, stderr = process.communicate(timeout=0.1)
+                return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+            except subprocess.TimeoutExpired:
+                continue
+    except BaseException:
+        _stop_process(process)
+        for path in cleanup_paths or ():
+            try:
+                path = Path(path)
+                if path.exists():
+                    path.unlink()
+            except Exception:
+                pass
+        raise
+
+
+def _output_is_connected(prompt, unique_id, output_index, default=True):
+    if prompt is None or unique_id is None:
+        return default
+    node_id = str(unique_id)
+
+    def has_link(value):
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            return str(value[0]) == node_id and int(value[1]) == int(output_index)
+        if isinstance(value, dict):
+            return any(has_link(item) for item in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(has_link(item) for item in value)
+        return False
+
+    try:
+        nodes = prompt.values() if isinstance(prompt, dict) else prompt
+        for node in nodes:
+            inputs = node.get("inputs", {}) if isinstance(node, dict) else {}
+            if has_link(inputs):
+                return True
+        return False
+    except Exception:
+        return default
 
 
 def _find_ffmpeg():
@@ -111,6 +183,7 @@ def _empty_audio(sample_rate=44100):
 
 
 def _trim_audio(audio, start_seconds, duration_seconds):
+    _throw_if_interrupted()
     if audio is None:
         return _empty_audio()
     if not isinstance(audio, dict) or "waveform" not in audio:
@@ -125,6 +198,7 @@ def _trim_audio(audio, start_seconds, duration_seconds):
     length = max(0, int(round(duration_seconds * sample_rate)))
     end = min(waveform.shape[-1], start + length)
     trimmed = waveform[..., start:end].clone()
+    _throw_if_interrupted()
     return {"waveform": trimmed, "sample_rate": sample_rate}
 
 
@@ -143,6 +217,7 @@ def _is_audio_path(path):
 
 
 def _load_audio_segment(video_file, start_seconds, duration_seconds):
+    _throw_if_interrupted()
     ffmpeg = _find_ffmpeg()
     sample_rate = 44100
     args = [
@@ -164,7 +239,8 @@ def _load_audio_segment(video_file, start_seconds, duration_seconds):
         "f32le",
         "-",
     ]
-    result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    result = _run_interruptible_subprocess(args)
+    _throw_if_interrupted()
     if result.returncode != 0 or not result.stdout:
         return _empty_audio(sample_rate)
 
@@ -173,7 +249,74 @@ def _load_audio_segment(video_file, start_seconds, duration_seconds):
         return _empty_audio(sample_rate)
     audio = audio.reshape((-1, 2)).T
     waveform = torch.from_numpy(audio.copy()).unsqueeze(0)
+    _throw_if_interrupted()
     return {"waveform": waveform, "sample_rate": sample_rate}
+
+
+def _probe_video_size(video_file):
+    ffmpeg = _find_ffmpeg()
+    result = _run_interruptible_subprocess([ffmpeg, "-hide_banner", "-i", str(video_file)])
+    text = (result.stderr or b"").decode("utf-8", errors="replace")
+    match = re.search(r"Video:.*?,\s*(\d+)x(\d+)", text)
+    if not match:
+        raise RuntimeError("PRECUT could not read video dimensions for image output.")
+    return int(match.group(1)), int(match.group(2))
+
+
+def _load_image_segment(video_file, start_seconds, duration_seconds, fps, frame_count=None):
+    _throw_if_interrupted()
+    width, height = _probe_video_size(video_file)
+    frame_size = width * height * 3
+    if frame_size <= 0:
+        raise RuntimeError("PRECUT image output has invalid video dimensions.")
+
+    target_frames = int(frame_count or round(max(0.0, duration_seconds) * fps) or 1)
+    target_frames = max(1, target_frames)
+    args = [
+        _find_ffmpeg(),
+        "-v",
+        "error",
+        "-ss",
+        str(max(0.0, start_seconds)),
+        "-t",
+        str(max(0.0, duration_seconds)),
+        "-i",
+        str(video_file),
+        "-an",
+        "-vf",
+        f"fps=fps={fps},format=rgb24",
+        "-frames:v",
+        str(target_frames),
+        "-f",
+        "rawvideo",
+        "-",
+    ]
+    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    frames = []
+    pbar = ProgressBar(target_frames)
+    try:
+        while len(frames) < target_frames:
+            _throw_if_interrupted()
+            data = process.stdout.read(frame_size)
+            if not data:
+                break
+            if len(data) != frame_size:
+                break
+            frame = np.frombuffer(data, dtype=np.uint8).reshape((height, width, 3))
+            frames.append(frame.astype(np.float32) / 255.0)
+            pbar.update(1)
+        stdout, stderr = process.communicate()
+    except BaseException:
+        _stop_process(process)
+        raise
+
+    if process.returncode != 0:
+        message = (stderr or b"").decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"PRECUT failed to load image frames. {message}")
+    if not frames:
+        raise RuntimeError("PRECUT image output did not produce any frames.")
+    _throw_if_interrupted()
+    return torch.from_numpy(np.stack(frames, axis=0))
 
 
 def _media_edit(state):
@@ -218,9 +361,83 @@ def _has_media_edit(edit):
     return bool(edit["crop"]) or abs(edit["scale"] - 1.0) > 0.0001 or abs(edit["rotation"]) > 0.0001
 
 
-def _process_video_file(video_file, state, start_seconds, duration_seconds):
+def _output_dimensions(state):
+    source_width = int(state.get("media_width") or 0)
+    source_height = int(state.get("media_height") or 0)
+    if source_width <= 0 or source_height <= 0 or state.get("media_type") == "audio":
+        return 0, 0
+
     edit = _media_edit(state)
-    if not _has_media_edit(edit):
+    crop = edit["crop"] or {"x": 0, "y": 0, "w": source_width, "h": source_height}
+    cropped_width = max(1, int(round(crop["w"])))
+    cropped_height = max(1, int(round(crop["h"])))
+    scaled_width = max(1, int(round(cropped_width * edit["scale"])))
+    scaled_height = max(1, int(round(cropped_height * edit["scale"])))
+    if edit["crop"]:
+        return scaled_width, scaled_height
+
+    radians = abs((edit["rotation"] * math.pi) / 180.0)
+    sin_value = abs(math.sin(radians))
+    cos_value = abs(math.cos(radians))
+    width = max(1, int(round(scaled_width * cos_value + scaled_height * sin_value)))
+    height = max(1, int(round(scaled_width * sin_value + scaled_height * cos_value)))
+    return width, height
+
+
+def _video_info(state, duration, fps, frame_count):
+    width, height = _output_dimensions(state)
+    return {
+        "duration": float(duration),
+        "fps": float(fps),
+        "length": int(max(0, frame_count)),
+        "width": int(width),
+        "height": int(height),
+    }
+
+
+def _source_fps(state, fallback):
+    try:
+        fps = float(state.get("source_fps") or fallback)
+    except Exception:
+        fps = fallback
+    if not math.isfinite(fps) or fps <= 0:
+        fps = fallback
+    return fps
+
+
+def _fps_filter_needed(state, fps):
+    source_fps = _source_fps(state, fps)
+    return abs(source_fps - fps) > 0.0001
+
+
+def _fps_fraction(fps):
+    return Fraction(float(fps)).limit_denominator(100000)
+
+
+def _resample_images_by_fps(images, source_fps, target_fps, duration_seconds):
+    _throw_if_interrupted()
+    if not torch.is_tensor(images) or images.ndim < 1:
+        return images, 0
+    source_count = int(images.shape[0])
+    if source_count <= 0:
+        return images, 0
+    target_count = max(1, int(round(max(0.0, duration_seconds) * target_fps)))
+    if abs(source_fps - target_fps) <= 0.0001 and source_count == target_count:
+        cloned = images.clone()
+        _throw_if_interrupted()
+        return cloned, source_count
+    indices = torch.arange(target_count, dtype=torch.float64) * (source_fps / target_fps)
+    indices = torch.clamp(indices.round().to(torch.long), 0, source_count - 1)
+    resampled = images.index_select(0, indices).clone()
+    _throw_if_interrupted()
+    return resampled, target_count
+
+
+def _process_video_file(video_file, state, start_seconds, duration_seconds, fps):
+    _throw_if_interrupted()
+    edit = _media_edit(state)
+    force_fps = _fps_filter_needed(state, fps)
+    if not _has_media_edit(edit) and not force_fps:
         return video_file, start_seconds, duration_seconds
 
     ffmpeg = _find_ffmpeg()
@@ -285,6 +502,9 @@ def _process_video_file(video_file, state, start_seconds, duration_seconds):
         angle = edit["rotation"] * math.pi / 180.0
         filters.append(f"rotate={angle}:ow=rotw({angle}):oh=roth({angle}):c={background}")
 
+    if force_fps:
+        filters.append(f"fps=fps={fps}")
+
     filters.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
     filters.append("format=yuv420p")
     stat = os.stat(video_file)
@@ -295,6 +515,8 @@ def _process_video_file(video_file, state, start_seconds, duration_seconds):
             "size": stat.st_size,
             "start": round(start_seconds, 6),
             "duration": round(duration_seconds, 6),
+            "fps": round(fps, 6),
+            "source_fps": round(_source_fps(state, fps), 6),
             "edit": edit,
         },
         sort_keys=True,
@@ -332,20 +554,23 @@ def _process_video_file(video_file, state, start_seconds, duration_seconds):
         "+faststart",
         str(output),
     ]
-    result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    result = _run_interruptible_subprocess(args, cleanup_paths=(output,))
+    _throw_if_interrupted()
     if result.returncode != 0 or not output.exists() or output.stat().st_size <= 0:
         message = result.stderr.decode("utf-8", errors="replace").strip()
         raise RuntimeError(f"PRECUT failed to process crop/transform output. {message}")
     return str(output), 0.0, duration_seconds
 
 
-def _trim_video_object(video, start_seconds, duration_seconds):
+def _trim_video_object(video, start_seconds, duration_seconds, target_fps=None):
+    _throw_if_interrupted()
     as_trimmed = getattr(video, "as_trimmed", None)
     if not callable(as_trimmed):
         as_trimmed = None
-    if as_trimmed is not None:
+    if target_fps is None and as_trimmed is not None:
         try:
             trimmed = as_trimmed(start_seconds, duration_seconds, strict_duration=False)
+            _throw_if_interrupted()
             if trimmed is not None:
                 return trimmed
         except Exception:
@@ -356,28 +581,35 @@ def _trim_video_object(video, start_seconds, duration_seconds):
         return video
 
     try:
+        _throw_if_interrupted()
         components = get_components()
+        _throw_if_interrupted()
         fps = float(components.frame_rate)
+        output_fps = float(target_fps or fps)
         images = components.images
         if torch.is_tensor(images) and images.ndim >= 1:
             start = max(0, min(int(round(start_seconds * fps)), int(images.shape[0])))
             length = max(0, int(round(duration_seconds * fps)))
             end = max(start, min(int(images.shape[0]), start + length))
             images = images[start:end].clone()
+            _throw_if_interrupted()
+            images, _ = _resample_images_by_fps(images, fps, output_fps, duration_seconds)
         audio = _trim_audio(getattr(components, "audio", None), start_seconds, duration_seconds)
         return InputImpl.VideoFromComponents(
-            Types.VideoComponents(images=images, audio=audio, frame_rate=components.frame_rate)
+            Types.VideoComponents(images=images, audio=audio, frame_rate=_fps_fraction(output_fps))
         )
     except Exception:
         return video
 
 
 def _audio_from_video_object(video):
+    _throw_if_interrupted()
     get_components = getattr(video, "get_components", None)
     if not callable(get_components):
         return _empty_audio()
     try:
         components = get_components()
+        _throw_if_interrupted()
         audio = getattr(components, "audio", None)
         return audio if audio is not None else _empty_audio()
     except Exception:
@@ -385,16 +617,22 @@ def _audio_from_video_object(video):
 
 
 def _images_from_video_object(video):
+    _throw_if_interrupted()
     get_components = getattr(video, "get_components", None)
     if not callable(get_components):
         return None
     try:
         images = getattr(get_components(), "images", None)
+        _throw_if_interrupted()
         if torch.is_tensor(images):
             if images.ndim == 4:
-                return images.clone()
+                cloned = images.clone()
+                _throw_if_interrupted()
+                return cloned
             if images.ndim == 3:
-                return images.unsqueeze(0).clone()
+                cloned = images.unsqueeze(0).clone()
+                _throw_if_interrupted()
+                return cloned
     except Exception:
         pass
     return None
@@ -417,18 +655,28 @@ class PRECUT:
                 "video": ("VIDEO",),
                 "audio": ("AUDIO",),
             },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+                "prompt": "PROMPT",
+            },
         }
 
-    RETURN_TYPES = ("VIDEO", "AUDIO", "IMAGE", "FLOAT")
-    RETURN_NAMES = ("video", "audio", "image", "duration")
+    RETURN_TYPES = ("VIDEO", "IMAGE", "AUDIO", PRECUT_VIDEO_INFO_TYPE)
+    RETURN_NAMES = ("video", "images", "audio", "media specs")
     FUNCTION = "cut"
     CATEGORY = "PRECUT"
+    DESCRIPTION = "Editor Edit Video Editor Audio Editor Cut Cutter Trim Trimmer Loader Load Video Audio"
 
-    def cut(self, precut_state="{}", video=None, audio=None):
+    def cut(self, precut_state="{}", video=None, audio=None, unique_id=None, prompt=None):
+        _throw_if_interrupted()
         state = _parse_state(precut_state)
+        want_video = _output_is_connected(prompt, unique_id, 0)
+        want_images = _output_is_connected(prompt, unique_id, 1)
+        want_audio = _output_is_connected(prompt, unique_id, 2)
         fps = float(state.get("fps") or 24.0)
         if not math.isfinite(fps) or fps <= 0:
             fps = 24.0
+        fps = min(60.0, fps)
 
         in_frame = int(state.get("in_frame") or 0)
         out_frame = int(state.get("out_frame") if state.get("out_frame") is not None else in_frame)
@@ -438,36 +686,56 @@ class PRECUT:
         frame_count = max(1, out_frame - in_frame + 1)
         duration = frame_count / fps
         start_seconds = in_frame / fps
+        video_info = _video_info(state, duration, fps, frame_count)
 
         if video is not None and audio is not None:
             raise RuntimeError("PRECUT: connect either VIDEO or AUDIO input, not both.")
 
         video_path = state.get("video_path") or _video_path_from_value(video)
+        _throw_if_interrupted()
+
+        if not want_video and not want_images and not want_audio:
+            return (None, None, None, video_info)
 
         if video is not None and not video_path:
-            video_out = _trim_video_object(video, start_seconds, duration)
-            return (video_out, _audio_from_video_object(video_out), _images_from_video_object(video_out), float(duration))
+            if not want_video and not want_images:
+                audio_out = _trim_audio(_audio_from_video_object(video), start_seconds, duration) if want_audio else None
+                return (None, None, audio_out, video_info)
+            video_out = _trim_video_object(video, start_seconds, duration, fps)
+            images_out = _images_from_video_object(video_out) if want_images else None
+            audio_out = _audio_from_video_object(video_out) if want_audio else None
+            return (video_out, images_out, audio_out, video_info)
 
         if not video_path and audio is not None:
             audio_total = _audio_duration(audio)
             start_seconds = min(start_seconds, audio_total) if audio_total > 0 else start_seconds
             if audio_total > 0:
                 duration = min(duration, max(0.0, audio_total - start_seconds))
-            return (None, _trim_audio(audio, start_seconds, duration), None, float(duration))
+                frame_count = max(0, int(round(duration * fps)))
+                video_info = _video_info(state, duration, fps, frame_count)
+            audio_out = _trim_audio(audio, start_seconds, duration) if want_audio else None
+            return (None, None, audio_out, video_info)
 
         if not video_path:
             raise RuntimeError("PRECUT needs a loaded media file, connected VIDEO input, or connected AUDIO input.")
 
         resolved = _input_path(video_path)
+        _throw_if_interrupted()
 
         if state.get("media_type") == "audio" or _is_audio_path(resolved):
-            loaded_audio = _load_audio_segment(resolved, start_seconds, duration)
-            return (None, loaded_audio, None, float(duration))
+            loaded_audio = _load_audio_segment(resolved, start_seconds, duration) if want_audio else None
+            return (None, None, loaded_audio, video_info)
 
-        video_source, video_start, video_duration = _process_video_file(resolved, state, start_seconds, duration)
-        video_out = InputImpl.VideoFromFile(video_source, start_time=video_start, duration=video_duration)
-        loaded_audio = _load_audio_segment(resolved, start_seconds, duration)
-        return (video_out, loaded_audio, _images_from_video_object(video_out), float(duration))
+        video_out = None
+        images_out = None
+        if want_video or want_images:
+            video_source, video_start, video_duration = _process_video_file(resolved, state, start_seconds, duration, fps)
+            if want_video:
+                video_out = InputImpl.VideoFromFile(video_source, start_time=video_start, duration=video_duration)
+                _throw_if_interrupted()
+            images_out = _load_image_segment(video_source, video_start, video_duration, fps, frame_count) if want_images else None
+        loaded_audio = _load_audio_segment(resolved, start_seconds, duration) if want_audio else None
+        return (video_out, images_out, loaded_audio, video_info)
 
     @classmethod
     def IS_CHANGED(cls, precut_state="{}", **kwargs):
@@ -483,12 +751,63 @@ class PRECUT:
             return precut_state
 
 
+class PRECUTVideoInfo:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"video_info": (PRECUT_VIDEO_INFO_TYPE, {"display_name": "media specs"})}}
+
+    RETURN_TYPES = ("FLOAT", "INT", "INT", "INT", "FLOAT")
+    RETURN_NAMES = ("fps", "width", "height", "frames", "duration")
+    FUNCTION = "get_video_info"
+    CATEGORY = "PRECUT"
+    OUTPUT_NODE = True
+
+    @staticmethod
+    def _values(video_info):
+        if not isinstance(video_info, dict):
+            video_info = {}
+        return (
+            float(video_info.get("fps") or 0.0),
+            int(video_info.get("width") or 0),
+            int(video_info.get("height") or 0),
+            int(video_info.get("length") or 0),
+            float(video_info.get("duration") or 0.0),
+        )
+
+    @staticmethod
+    def _format_float(value):
+        text = f"{float(value):.6f}".rstrip("0").rstrip(".")
+        return text or "0"
+
+    @classmethod
+    def _ui(cls, values):
+        fps, width, height, frames, duration = values
+        return {
+            "text": [
+                cls._format_float(fps),
+                str(int(width)),
+                str(int(height)),
+                str(int(frames)),
+                f"{float(duration):.2f} (s)",
+            ]
+        }
+
+    def get_video_info(self, video_info):
+        values = self._values(video_info)
+        return {
+            "ui": self._ui(values),
+            "result": values,
+        }
+
+
 NODE_CLASS_MAPPINGS = {
     "PRECUT": PRECUT,
+    "PRECUTVideoInfo": PRECUTVideoInfo,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "PRECUT": "Media Cutter",
+    "PRECUT": "PRECUT",
+    "PRECUTVideoInfo": "PRECUT Media Specs",
 }
 
 
@@ -497,9 +816,23 @@ class PRECUTV2(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="PRECUT",
-            display_name="Media Cutter",
+            display_name="PRECUT",
             category="PRECUT",
             description="Visually select IN and OUT points for video or audio media.",
+            search_aliases=[
+                "Editor",
+                "Edit",
+                "Video Editor",
+                "Audio Editor",
+                "Cut",
+                "Cutter",
+                "Trim",
+                "Trimmer",
+                "Loader",
+                "Load",
+                "Video",
+                "Audio",
+            ],
             inputs=[
                 io.String.Input("precut_state", multiline=True, default="{}"),
                 io.Video.Input("video", optional=True),
@@ -507,24 +840,56 @@ class PRECUTV2(io.ComfyNode):
             ],
             outputs=[
                 io.Video.Output(display_name="video"),
+                io.Image.Output(display_name="images"),
                 io.Audio.Output(display_name="audio"),
-                io.Image.Output(display_name="image"),
-                io.Float.Output(display_name="duration"),
+                io.Custom(PRECUT_VIDEO_INFO_TYPE).Output(display_name="media specs"),
             ],
+            hidden=[io.Hidden.unique_id, io.Hidden.prompt],
         )
 
     @classmethod
-    def execute(cls, precut_state="{}", video=None, audio=None) -> io.NodeOutput:
-        return io.NodeOutput(*PRECUT().cut(precut_state=precut_state, video=video, audio=audio))
+    def execute(cls, precut_state="{}", video=None, audio=None, **kwargs) -> io.NodeOutput:
+        hidden = getattr(cls, "hidden", None)
+        if hidden is not None:
+            kwargs.setdefault("unique_id", hidden.unique_id)
+            kwargs.setdefault("prompt", hidden.prompt)
+        return io.NodeOutput(*PRECUT().cut(precut_state=precut_state, video=video, audio=audio, **kwargs))
 
     @classmethod
     def fingerprint_inputs(cls, precut_state="{}", **kwargs):
         return PRECUT.IS_CHANGED(precut_state=precut_state, **kwargs)
 
 
+class PRECUTVideoInfoV2(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="PRECUTVideoInfo",
+            display_name="PRECUT Media Specs",
+            category="PRECUT",
+            description="Expose PRECUT media selection metadata as separate values.",
+            is_output_node=True,
+            inputs=[
+                io.Custom(PRECUT_VIDEO_INFO_TYPE).Input("video_info", display_name="media specs"),
+            ],
+            outputs=[
+                io.Float.Output(display_name="fps"),
+                io.Int.Output(display_name="width"),
+                io.Int.Output(display_name="height"),
+                io.Int.Output(display_name="frames"),
+                io.Float.Output(display_name="duration"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, video_info) -> io.NodeOutput:
+        values = PRECUTVideoInfo._values(video_info)
+        return io.NodeOutput(*values, ui=PRECUTVideoInfo._ui(values))
+
+
 class PRECUTExtension(ComfyExtension):
     async def get_node_list(self):
-        return [PRECUTV2]
+        return [PRECUTV2, PRECUTVideoInfoV2]
 
 
 async def comfy_entrypoint() -> PRECUTExtension:

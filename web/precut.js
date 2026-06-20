@@ -6,6 +6,7 @@ const STATE_DEFAULT = {
   video_url: "",
   file_name: "",
   fps: 24,
+  source_fps: 24,
   frame_count: 1,
   duration: 0,
   media_width: 0,
@@ -45,10 +46,14 @@ const MIN_NAV_WINDOW_WIDTH = 42;
 const NAV_HANDLE_SIZE = 14;
 const SHUTTLE_SPEEDS = [1, 2, 4, 8, 16];
 const MEDIA_TOOLBAR_HEIGHT = 30;
-const CONTROLS_HEIGHT = 48;
+const CONTROLS_HEIGHT = 54;
 const SPLITTER_HEIGHT = 8;
+const DEFAULT_AUDIO_FPS = 25;
 const FIXED_WIDGET_HEIGHT = 34 + MEDIA_TOOLBAR_HEIGHT + DEFAULT_TIMELINE_HEIGHT + CONTROLS_HEIGHT + SPLITTER_HEIGHT + 54;
 const NODE_BOTTOM_PADDING = 8;
+const MEDIA_SPECS_MIN_WIDTH = 220;
+const MEDIA_SPECS_MIN_HEIGHT = 120;
+const MEDIA_SPECS_DEFAULT_SIZE = [MEDIA_SPECS_MIN_WIDTH, MEDIA_SPECS_MIN_HEIGHT];
 const ROTATE_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cpath d='M24.5 8.5A11 11 0 1 0 26.5 20.5' fill='none' stroke='black' stroke-width='5.8' stroke-linecap='round'/%3E%3Cpath d='M24.5 8.5A11 11 0 1 0 26.5 20.5' fill='none' stroke='white' stroke-width='3.1' stroke-linecap='round'/%3E%3Cpath d='M24.7 3.4 29.4 9.2 22 10.5Z' fill='white' stroke='black' stroke-width='1.8' stroke-linejoin='round'/%3E%3C/svg%3E") 16 16, alias`;
 
 const icons = {
@@ -421,6 +426,9 @@ function css() {
       z-index: 4;
       text-align: center;
     }
+    .precut-timecodes.inactive {
+      color: #757d87;
+    }
     .precut-timecodes span,
     .precut-timecodes strong { flex: 1 1 0; }
     .precut-timecodes strong { color: var(--blue); font-weight: 650; }
@@ -444,6 +452,12 @@ function css() {
       border: 2px solid var(--yellow);
       background: rgba(255,179,49,.16);
       pointer-events: none;
+    }
+    .precut-timeline.empty .precut-selection,
+    .precut-timeline.empty .precut-handle,
+    .precut-timeline.empty .precut-playhead,
+    .precut-timeline.empty .precut-offscreen-indicator {
+      display: none;
     }
     .precut-handle {
       position: absolute;
@@ -482,9 +496,13 @@ function css() {
       align-items: center;
       justify-content: center;
       color: var(--yellow);
-      pointer-events: none;
+      pointer-events: auto;
+      cursor: pointer;
       transform: translateY(-50%);
       z-index: 5;
+    }
+    .precut-offscreen-indicator:hover {
+      filter: brightness(1.18);
     }
     .precut-offscreen-indicator.visible {
       display: flex;
@@ -506,20 +524,20 @@ function css() {
     }
     .precut-playhead {
       position: absolute;
-      left: var(--playhead);
+      left: var(--playhead-px, var(--playhead));
       top: 28px;
       bottom: 30px;
-      width: 14px;
+      width: 0;
       background: transparent;
       pointer-events: none;
       z-index: 3;
-      transform: translateX(-50%);
+      transform: none;
     }
     .precut-playhead::before {
       content: "";
       position: absolute;
       top: 0;
-      left: 50%;
+      left: 0;
       border-left: 6px solid transparent;
       border-right: 6px solid transparent;
       border-top: 9px solid var(--playhead-color);
@@ -528,7 +546,7 @@ function css() {
     .precut-playhead::after {
       content: "";
       position: absolute;
-      left: 50%;
+      left: 0;
       top: 0;
       bottom: 5px;
       width: 3px;
@@ -611,6 +629,7 @@ function css() {
     }
     .precut-right-controls {
       margin-left: 0;
+      gap: 18px;
     }
     .precut-btn {
       display: grid;
@@ -678,6 +697,23 @@ function css() {
       background: linear-gradient(180deg, #4b381c, #221b10);
       box-shadow: 0 0 0 1px rgba(255,189,62,.18), 0 0 14px rgba(255,189,62,.16);
     }
+    .precut-controls.inactive .precut-btn,
+    .precut-controls .precut-btn:disabled {
+      color: #7f8791 !important;
+      border-color: rgba(255,255,255,.08) !important;
+      background: linear-gradient(180deg, rgba(42,44,47,.55), rgba(27,29,31,.55)) !important;
+      box-shadow: none !important;
+      filter: grayscale(1);
+      opacity: .42;
+      cursor: default;
+      pointer-events: none;
+      transform: none;
+    }
+    .precut-controls.inactive .precut-btn.mark,
+    .precut-controls .precut-btn.mark:disabled {
+      color: #8c8170 !important;
+      border-color: rgba(255,189,62,.14) !important;
+    }
     .precut-load {
       width: auto;
       min-width: 132px;
@@ -716,9 +752,35 @@ function css() {
       white-space: nowrap;
       box-sizing: border-box;
     }
+    .precut-video-actions .precut-btn.precut-load {
+      display: flex;
+      width: auto;
+      flex: 0 0 auto;
+      justify-content: center;
+      align-items: center;
+      gap: 8px;
+      padding: 0 12px;
+    }
+    .precut-video-actions .precut-btn.load-inputs {
+      width: 154px;
+      min-width: 154px;
+      flex-basis: 154px;
+    }
+    .precut-video-actions .precut-btn.load {
+      width: 150px;
+      min-width: 150px;
+      flex-basis: 150px;
+    }
+    .precut-video-actions .precut-btn.precut-load span {
+      display: block;
+      flex: 0 0 auto;
+      text-align: left;
+      white-space: nowrap;
+    }
     .precut-video-actions .precut-btn svg {
       width: 16px;
       height: 16px;
+      flex: 0 0 16px;
     }
     .precut-video-actions .precut-help {
       min-width: 34px;
@@ -735,6 +797,12 @@ function css() {
       flex: 0 0 34px;
       padding: 0;
       border-radius: 999px;
+    }
+    .precut-ui.fullscreen .precut-video-actions .precut-help {
+      margin-left: auto;
+    }
+    .precut-ui.fullscreen .precut-logo {
+      margin-left: 0;
     }
     .precut-media-tools {
       display: flex;
@@ -758,6 +826,7 @@ function css() {
     }
     .precut-media-tools.disabled .precut-tool-btn,
     .precut-media-tools.disabled .precut-resolution-field,
+    .precut-media-tools.disabled .precut-fps-field,
     .precut-media-tools.disabled .precut-ratio-field,
     .precut-media-tools.disabled .precut-ratio-select,
     .precut-media-tools.disabled .precut-background-menu,
@@ -828,6 +897,7 @@ function css() {
       -webkit-user-select: none;
     }
     .precut-resolution-field,
+    .precut-fps-field,
     .precut-ratio-field {
       height: 24px;
       display: inline-flex;
@@ -851,10 +921,14 @@ function css() {
     .precut-resolution-field {
       width: 42px;
     }
+    .precut-fps-field {
+      width: 48px;
+    }
     .precut-ratio-field {
       width: 26px;
     }
     .precut-resolution-field:focus,
+    .precut-fps-field:focus,
     .precut-ratio-field:focus {
       border-color: rgba(255,189,62,.8);
       box-shadow: 0 0 0 1px rgba(255,189,62,.24);
@@ -880,7 +954,7 @@ function css() {
     }
     .precut-ratio-select {
       height: 24px;
-      min-width: 52px;
+      min-width: 46px;
       padding: 0 18px 0 7px;
       border: 1px solid rgba(255,255,255,.14);
       border-radius: 6px;
@@ -912,7 +986,7 @@ function css() {
       align-items: center;
       gap: 4px;
       flex: 0 0 auto;
-      margin-left: 10px;
+      margin-left: 4px;
       position: relative;
       user-select: none;
       -webkit-user-select: none;
@@ -930,10 +1004,13 @@ function css() {
       outline: none;
     }
     .precut-background-menu {
-      width: 30px;
-      min-width: 30px;
+      width: 32px;
+      min-width: 32px;
       padding: 0;
       position: relative;
+      font-size: 10px;
+      font-weight: 850;
+      letter-spacing: .02em;
     }
     .precut-background-menu::after {
       content: "";
@@ -955,8 +1032,8 @@ function css() {
       top: 29px;
       z-index: 12;
       display: none;
-      grid-template-columns: repeat(4, 24px) 24px 58px;
-      align-items: center;
+      flex-direction: column;
+      align-items: stretch;
       gap: 5px;
       padding: 6px;
       border: 1px solid rgba(255,255,255,.16);
@@ -965,7 +1042,16 @@ function css() {
       box-shadow: 0 8px 22px rgba(0,0,0,.42);
     }
     .precut-background-group.open .precut-background-popup {
-      display: grid;
+      display: flex;
+    }
+    .precut-background-custom-row,
+    .precut-background-mode-row {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .precut-background-mode-row {
+      justify-content: space-between;
     }
     .precut-bg-swatch {
       width: 24px;
@@ -994,28 +1080,35 @@ function css() {
       text-transform: uppercase;
     }
     .precut-background-color {
-      width: 22px;
+      width: 24px;
       height: 24px;
       padding: 0;
       border: 1px solid rgba(255,255,255,.14);
       border-radius: 6px;
-      background: transparent;
+      background: linear-gradient(135deg, #ff4d4d, #ffd84d 32%, #48d879 55%, #5ea0ff 76%, #cc66ff);
       cursor: pointer;
       box-sizing: border-box;
+      overflow: hidden;
     }
     .precut-background-color::-webkit-color-swatch-wrapper {
-      padding: 2px;
+      padding: 0;
     }
     .precut-background-color::-webkit-color-swatch {
       border: 0;
-      border-radius: 4px;
+      border-radius: 6px;
+      opacity: 0;
     }
     .precut-background-code:focus,
     .precut-background-color:focus {
       border-color: rgba(255,189,62,.8);
       box-shadow: 0 0 0 1px rgba(255,189,62,.24);
     }
+    .precut-background-color.active {
+      border-color: rgba(255,189,62,.75);
+      box-shadow: 0 0 0 1px rgba(255,189,62,.24);
+    }
     .precut-crop-label,
+    .precut-fps-label,
     .precut-reset-label,
     .precut-ratio-label {
       color: var(--muted);
@@ -1045,6 +1138,11 @@ function css() {
       z-index: 20;
       display: none;
       pointer-events: auto;
+    }
+    .precut-ui.fullscreen .precut-shortcuts-panel {
+      left: auto;
+      right: 222px;
+      top: 54px;
     }
     .precut-shortcuts-panel.open { display: block; }
     .precut-shortcuts-panel h4 {
@@ -1105,16 +1203,16 @@ function css() {
       text-shadow: 0 1px 2px rgba(0,0,0,.75);
     }
     .precut-readout {
-      width: 154px;
-      flex: 0 0 154px;
-      height: var(--precut-btn-size);
+      width: 142px;
+      flex: 0 0 142px;
+      height: 66px;
       display: grid;
-      grid-template-columns: 34px 92px;
-      grid-template-rows: 1fr 1fr;
-      column-gap: 8px;
+      grid-template-columns: 50px 68px;
+      grid-template-rows: 1fr 16px 1fr 1px 1fr 16px 1fr 1px 1fr 16px 1fr;
+      column-gap: 4px;
       row-gap: 0;
       align-items: center;
-      padding: 3px 8px;
+      padding: 0 9px;
       border: 1px solid #4b4f55;
       border-radius: 7px;
       color: var(--blue);
@@ -1122,47 +1220,83 @@ function css() {
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
       line-height: 1;
-      text-align: center;
+      text-align: left;
       overflow: hidden;
       box-sizing: border-box;
       position: relative;
       user-select: none;
     }
     .precut-readout-label {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      align-self: stretch;
       min-width: 0;
       color: #aeb5bf;
-      font-size: 12px;
+      font-size: 10.5px;
       font-weight: 500;
-      line-height: 1;
+      line-height: 16px;
       text-align: left;
+      padding-right: 1px;
+      box-sizing: border-box;
     }
     .precut-readout-label::after {
       content: ":";
-      float: right;
+      float: none;
+      margin-left: auto;
       color: #7f8791;
       font-weight: 500;
     }
     .precut-readout-line {
-      position: absolute;
-      left: 0;
-      right: 0;
-      top: 50%;
+      position: static;
+      grid-column: 1 / -1;
+      align-self: center;
+      width: 100%;
       height: 1px;
-      background: rgba(255,255,255,.08);
+      background: rgba(255,255,255,.065);
       pointer-events: none;
+    }
+    .precut-readout-line.one {
+      grid-row: 4;
+    }
+    .precut-readout-line.two {
+      grid-row: 8;
+    }
+    .precut-readout .row-tc {
+      grid-row: 2;
+    }
+    .precut-readout .row-io {
+      grid-row: 6;
+    }
+    .precut-readout .row-frames {
+      grid-row: 10;
     }
     .precut-readout input,
     .precut-range-readout {
-      width: 96px;
-      justify-self: end;
+      width: 68px;
+      height: 16px;
+      align-self: stretch;
+      justify-self: start;
       min-width: 0;
       color: #b7bec8;
       font: inherit;
-      font-size: 12px;
+      font-size: 10.5px;
       font-weight: 500;
       font-variant-numeric: tabular-nums;
-      line-height: 1;
-      text-align: right;
+      line-height: 16px;
+      text-align: left;
+      padding-left: 0;
+      box-sizing: border-box;
+    }
+    .precut-readout.inactive,
+    .precut-readout.inactive .precut-readout-label,
+    .precut-readout.inactive input,
+    .precut-readout.inactive .precut-range-readout,
+    .precut-readout.inactive .precut-frame-count-input {
+      color: #757d87 !important;
+    }
+    .precut-readout.inactive .precut-readout-label::after {
+      color: #686f78;
     }
     .precut-readout input {
       border: 0;
@@ -1171,6 +1305,11 @@ function css() {
       background: transparent;
       user-select: text;
     }
+    .precut-readout input:disabled {
+      opacity: 1;
+      cursor: default;
+      -webkit-text-fill-color: currentColor;
+    }
     .precut-readout .precut-range-readout {
       color: var(--yellow);
       font-weight: 500;
@@ -1178,6 +1317,9 @@ function css() {
       text-overflow: ellipsis;
       user-select: none;
       pointer-events: auto;
+    }
+    .precut-frame-count-input {
+      color: var(--blue) !important;
     }
     .precut-file { display: none; }
   `;
@@ -1205,6 +1347,12 @@ function parseTimecode(value, fps = 24) {
   if (parts.length === 1) return parts[0];
   const [frames = 0, seconds = 0, minutes = 0, hours = 0] = parts.reverse();
   return (((hours * 60 + minutes) * 60 + seconds) * nominalFps) + frames;
+}
+
+function fmtFps(value) {
+  const fps = Number(value);
+  if (!Number.isFinite(fps) || fps <= 0) return "24";
+  return String(Math.min(60, fps).toFixed(4)).replace(/\.?0+$/, "");
 }
 
 function formatTimecodeDigits(digits) {
@@ -1306,9 +1454,86 @@ function videoPathFromNode(sourceNode) {
   return values.find((value) => MEDIA_EXTENSIONS.test(value.trim())) || "";
 }
 
+function isMediaSpecsNode(node) {
+  const names = [
+    node?.comfyClass,
+    node?.type,
+    node?.title,
+    node?.constructor?.comfyClass,
+    node?.constructor?.type,
+  ];
+  return names.includes("PRECUTVideoInfo") || names.includes("PRECUT Media Specs");
+}
+
+function applyMediaSpecsSizeLimits(target) {
+  if (!target) return;
+  target.size = Array.isArray(target.size) ? target.size : MEDIA_SPECS_DEFAULT_SIZE.slice();
+  target.min_width = MEDIA_SPECS_MIN_WIDTH;
+  target.min_height = MEDIA_SPECS_MIN_HEIGHT;
+  target.min_size = MEDIA_SPECS_DEFAULT_SIZE.slice();
+}
+
+function clampMediaSpecsNodeSize(node, size = node?.size) {
+  if (!node || !Array.isArray(size)) return size;
+  applyMediaSpecsSizeLimits(node);
+  size[0] = Math.max(MEDIA_SPECS_MIN_WIDTH, Number(size[0]) || MEDIA_SPECS_MIN_WIDTH);
+  size[1] = Math.max(MEDIA_SPECS_MIN_HEIGHT, Number(size[1]) || MEDIA_SPECS_MIN_HEIGHT);
+  if (Array.isArray(node.size)) {
+    node.size[0] = Math.max(MEDIA_SPECS_MIN_WIDTH, Number(node.size[0]) || MEDIA_SPECS_MIN_WIDTH);
+    node.size[1] = Math.max(MEDIA_SPECS_MIN_HEIGHT, Number(node.size[1]) || MEDIA_SPECS_MIN_HEIGHT);
+  }
+  return size;
+}
+
 app.registerExtension({
   name: "PRECUT.UI",
+  async beforeRegisterNodeDef(nodeType, nodeData) {
+    if (nodeData?.name !== "PRECUTVideoInfo") return;
+    applyMediaSpecsSizeLimits(nodeType);
+    applyMediaSpecsSizeLimits(nodeType.prototype);
+
+    const outputNames = ["fps", "width", "height", "frames", "duration"];
+    function resetVideoInfoLabels(node) {
+      for (let i = 0; i < outputNames.length; i++) {
+        if (!node.outputs?.[i]) continue;
+        node.outputs[i].label = outputNames[i];
+      }
+    }
+
+    const originalOnConnectInput = nodeType.prototype.onConnectInput;
+    nodeType.prototype.onConnectInput = function () {
+      const result = originalOnConnectInput?.apply(this, arguments);
+      resetVideoInfoLabels(this);
+      return result;
+    };
+
+    const originalOnExecuted = nodeType.prototype.onExecuted;
+    nodeType.prototype.onExecuted = function (message) {
+      const result = originalOnExecuted?.apply(this, arguments);
+      const values = Array.isArray(message?.text) ? message.text : [];
+      for (let i = 0; i < outputNames.length; i++) {
+        if (!this.outputs?.[i]) continue;
+        const value = values[i];
+        this.outputs[i].label = value !== undefined && value !== null && value !== ""
+          ? `${value} : ${outputNames[i]}`
+          : outputNames[i];
+      }
+      return result;
+    };
+
+    const originalOnResize = nodeType.prototype.onResize;
+    nodeType.prototype.onResize = function (size) {
+      clampMediaSpecsNodeSize(this, size);
+      const result = originalOnResize?.apply(this, arguments);
+      clampMediaSpecsNodeSize(this);
+      return result;
+    };
+  },
   async nodeCreated(node) {
+    if (isMediaSpecsNode(node)) {
+      clampMediaSpecsNodeSize(node);
+      return;
+    }
     if (node.comfyClass !== "PRECUT") return;
     css();
 
@@ -1487,10 +1712,10 @@ app.registerExtension({
       <div class="precut-timecodes"></div>
       <div class="precut-selection"></div>
       <canvas class="precut-wave"></canvas>
-      <div class="precut-offscreen-indicator left" aria-hidden="true">
+      <div class="precut-offscreen-indicator left" role="button" tabindex="0" title="Center IN and OUT in timeline">
         <svg viewBox="0 0 24 24"><path d="M13 6 7 12l6 6"/><path d="M18 6l-6 6 6 6"/></svg>
       </div>
-      <div class="precut-offscreen-indicator right" aria-hidden="true">
+      <div class="precut-offscreen-indicator right" role="button" tabindex="0" title="Center IN and OUT in timeline">
         <svg viewBox="0 0 24 24"><path d="m11 6 6 6-6 6"/><path d="m6 6 6 6-6 6"/></svg>
       </div>
       <div class="precut-handle in">IN</div>
@@ -1525,21 +1750,21 @@ app.registerExtension({
     fileInput.type = "file";
     fileInput.accept = ".mp4,.mov,.mkv,.webm,.gif,.avi,.m4v,.mp3,.wav,.flac,.ogg,.m4a,.aac,.opus,video/*,audio/*";
 
-    const firstBtn = makeButton("first", "Go to IN - Up arrow. Double-click: go to timeline start.", icons.first, () => seekFrame(state.in_frame, { centerIfOutside: true }));
+    const firstBtn = makeButton("first", "Go to IN - Up arrow. Double-click: go to timeline start", icons.first, () => seekFrame(state.in_frame, { centerIfOutside: true }));
     const prevBtn = makeButton("prev", "Previous frame - Left arrow", icons.prev, () => seekFrame(currentFrame() - 1, { scrubAudio: true }));
     const playBtn = makeButton("play", "Play / stop - Space", icons.play, () => togglePlay());
     const nextBtn = makeButton("next", "Next frame - Right arrow", icons.next, () => seekFrame(currentFrame() + 1, { scrubAudio: true }));
-    const lastBtn = makeButton("last", "Go to OUT - Down arrow. Double-click: go to timeline end.", icons.last, () => seekFrame(state.out_frame, { centerIfOutside: true }));
+    const lastBtn = makeButton("last", "Go to OUT - Down arrow. Double-click: go to timeline end", icons.last, () => seekFrame(state.out_frame, { centerIfOutside: true }));
     const loadFileBtn = makeButton(
       "load precut-load",
-      "Load a video or audio file from disk.",
+      "Load a video or audio file from disk",
       `${icons.file}<span>LOAD MEDIA FILE</span>`,
       () => fileInput.click()
     );
     const loadInputsBtn = makeButton(
       "load-inputs precut-load",
-      "Load from connected VIDEO or AUDIO input. Connect only one media input at a time.",
-      `${icons.inputArrow}<span>LOAD MEDIA INPUTS</span>`,
+      "Load from connected VIDEO or AUDIO input. Connect only one media input at a time",
+      `${icons.inputArrow}<span>LOAD FROM INPUTS</span>`,
       () => loadFromInputs()
     );
     const helpBtn = makeButton("precut-help", "Shortcuts", "?", () => {
@@ -1550,7 +1775,7 @@ app.registerExtension({
     mediaTools.className = "precut-media-tools disabled";
     const backgroundGroup = document.createElement("div");
     backgroundGroup.className = "precut-background-group";
-    const backgroundMenuBtn = makeButton("precut-tool-btn precut-background-menu", "Crop background", icons.droplet, () => {
+    const backgroundMenuBtn = makeButton("precut-tool-btn precut-background-menu", "Crop Background Color", "BG", () => {
       backgroundGroup.classList.toggle("open");
     });
     const backgroundPopup = document.createElement("div");
@@ -1561,21 +1786,26 @@ app.registerExtension({
     const backgroundWhiteBtn = makeButton("precut-tool-btn precut-bg-swatch", "White background", "", () => setBackgroundColor("#FFFFFF", "white"));
     backgroundWhiteBtn.dataset.color = "#FFFFFF";
     backgroundWhiteBtn.style.setProperty("--swatch", "#FFFFFF");
-    const backgroundGrayBtn = makeButton("precut-tool-btn precut-bg-swatch", "Mid gray background", "", () => setBackgroundColor("#808080", "gray"));
+    const backgroundGrayBtn = makeButton("precut-tool-btn precut-bg-swatch", "Middle gray background", "", () => setBackgroundColor("#808080", "gray"));
     backgroundGrayBtn.dataset.color = "#808080";
     backgroundGrayBtn.style.setProperty("--swatch", "#808080");
     const backgroundColor = document.createElement("input");
     backgroundColor.className = "precut-background-color";
     backgroundColor.type = "color";
     backgroundColor.title = "Pick custom crop background";
-    const backgroundDropperBtn = makeButton("precut-tool-btn precut-background-dropper", "Pick background from screen", icons.droplet, () => pickBackgroundColor());
     const backgroundCode = document.createElement("input");
     backgroundCode.className = "precut-background-code";
     backgroundCode.type = "text";
     backgroundCode.spellcheck = false;
     backgroundCode.maxLength = 7;
     backgroundCode.title = "Custom crop background color";
-    backgroundPopup.append(backgroundBlackBtn, backgroundWhiteBtn, backgroundGrayBtn, backgroundDropperBtn, backgroundColor, backgroundCode);
+    const backgroundCustomRow = document.createElement("div");
+    backgroundCustomRow.className = "precut-background-custom-row";
+    const backgroundModeRow = document.createElement("div");
+    backgroundModeRow.className = "precut-background-mode-row";
+    backgroundCustomRow.append(backgroundCode);
+    backgroundModeRow.append(backgroundBlackBtn, backgroundWhiteBtn, backgroundGrayBtn, backgroundColor);
+    backgroundPopup.append(backgroundCustomRow, backgroundModeRow);
     backgroundGroup.append(backgroundMenuBtn, backgroundPopup);
     const resolutionGroup = document.createElement("div");
     resolutionGroup.className = "precut-resolution-group";
@@ -1585,7 +1815,8 @@ app.registerExtension({
     resolutionWidthBox.value = "--";
     resolutionWidthBox.spellcheck = false;
     resolutionWidthBox.inputMode = "numeric";
-    resolutionWidthBox.title = "Crop width.";
+    resolutionWidthBox.maxLength = 4;
+    resolutionWidthBox.title = "Crop width";
     const resolutionSwapBtn = makeButton("precut-tool-btn precut-resolution-swap", "Swap width and height", icons.swap, () => swapResolution());
     const resolutionHeightBox = document.createElement("input");
     resolutionHeightBox.className = "precut-resolution-field height";
@@ -1593,12 +1824,13 @@ app.registerExtension({
     resolutionHeightBox.value = "--";
     resolutionHeightBox.spellcheck = false;
     resolutionHeightBox.inputMode = "numeric";
-    resolutionHeightBox.title = "Crop height.";
+    resolutionHeightBox.maxLength = 4;
+    resolutionHeightBox.title = "Crop height";
     resolutionGroup.append(resolutionWidthBox, resolutionSwapBtn, resolutionHeightBox);
     const cropLabel = document.createElement("div");
     cropLabel.className = "precut-crop-label";
     cropLabel.textContent = "Crop :";
-    const cropCustomBtn = makeButton("precut-tool-btn precut-aspect-tool", "Crop (free custom ratio)", icons.crop, () => startFreeCrop());
+    const cropCustomBtn = makeButton("precut-tool-btn precut-aspect-tool", "Crop video", icons.crop, () => startFreeCrop());
     cropCustomBtn.dataset.aspect = "free";
     const ratioGroup = document.createElement("div");
     ratioGroup.className = "precut-ratio-group";
@@ -1621,7 +1853,8 @@ app.registerExtension({
     ratioWidthBox.value = "1";
     ratioWidthBox.spellcheck = false;
     ratioWidthBox.inputMode = "numeric";
-    ratioWidthBox.title = "Ratio width.";
+    ratioWidthBox.maxLength = 2;
+    ratioWidthBox.title = "Ratio width";
     const ratioSwapBtn = makeButton("precut-tool-btn precut-ratio-swap", "Swap ratio width and height", icons.swap, () => swapRatio());
     const ratioHeightBox = document.createElement("input");
     ratioHeightBox.className = "precut-ratio-field height";
@@ -1629,38 +1862,63 @@ app.registerExtension({
     ratioHeightBox.value = "1";
     ratioHeightBox.spellcheck = false;
     ratioHeightBox.inputMode = "numeric";
-    ratioHeightBox.title = "Ratio height.";
+    ratioHeightBox.maxLength = 2;
+    ratioHeightBox.title = "Ratio height";
     ratioGroup.append(ratioLabel, ratioSelect, ratioWidthBox, ratioSwapBtn, ratioHeightBox);
+    const fpsLabel = document.createElement("div");
+    fpsLabel.className = "precut-fps-label";
+    fpsLabel.textContent = "FPS :";
+    const fpsInput = document.createElement("input");
+    fpsInput.className = "precut-fps-field";
+    fpsInput.type = "text";
+    fpsInput.value = "24";
+    fpsInput.spellcheck = false;
+    fpsInput.inputMode = "decimal";
+    fpsInput.maxLength = 5;
+    fpsInput.title = "Force FPS, reset to restore original";
     const resetLabel = document.createElement("div");
     resetLabel.className = "precut-reset-label";
     resetLabel.textContent = "Reset :";
-    const resetToolBtn = makeButton("precut-tool-btn precut-reset-tool", "Reset crop and position", icons.reset, () => resetMediaEdit());
+    const resetToolBtn = makeButton("precut-tool-btn precut-reset-tool", "Reset crop, position and FPS", icons.reset, () => resetMediaEdit());
     const resolutionBoxes = [resolutionWidthBox, resolutionHeightBox];
     const ratioBoxes = [ratioWidthBox, ratioHeightBox];
-    mediaTools.append(cropLabel, cropCustomBtn, resolutionGroup, ratioGroup, backgroundGroup, resetLabel, resetToolBtn);
-    const markInBtn = makeButton("mark mark-in", "Mark IN at playhead - I. Double-click: mark IN at first frame.", "IN", () => markIn());
-    const markOutBtn = makeButton("mark mark-out", "Mark OUT at playhead - O. Double-click: mark OUT at last frame.", "OUT", () => markOut());
+    mediaTools.append(cropLabel, cropCustomBtn, resolutionGroup, ratioGroup, backgroundGroup, fpsLabel, fpsInput, resetLabel, resetToolBtn);
+    const markInBtn = makeButton("mark mark-in", "Mark IN at playhead - I. Double-click: mark IN at first frame", "IN", () => markIn());
+    const markOutBtn = makeButton("mark mark-out", "Mark OUT at playhead - O. Double-click: mark OUT at last frame", "OUT", () => markOut());
     const readout = document.createElement("div");
     readout.className = "precut-readout";
     const playheadInput = document.createElement("input");
-    playheadInput.className = "precut-playhead-timecode";
+    playheadInput.className = "precut-playhead-timecode row-tc";
     playheadInput.type = "text";
     playheadInput.spellcheck = false;
     playheadInput.inputMode = "numeric";
     playheadInput.maxLength = 11;
-    playheadInput.title = "Current playhead timecode. Type a timecode and press Enter to jump.";
+    playheadInput.title = "Current playhead timecode. Type a timecode and press Enter to jump";
     const tcLabel = document.createElement("div");
-    tcLabel.className = "precut-readout-label";
+    tcLabel.className = "precut-readout-label row-tc";
     tcLabel.textContent = "TC";
     const ioLabel = document.createElement("div");
-    ioLabel.className = "precut-readout-label";
-    ioLabel.textContent = "I/O";
-    const divider = document.createElement("div");
-    divider.className = "precut-readout-line";
+    ioLabel.className = "precut-readout-label row-io";
+    ioLabel.textContent = "IN/OUT";
+    const frLabel = document.createElement("div");
+    frLabel.className = "precut-readout-label row-frames";
+    frLabel.textContent = "Frames";
+    frLabel.title = "The number of frames, type a number and press Enter to edit";
+    const dividerOne = document.createElement("div");
+    dividerOne.className = "precut-readout-line one";
+    const dividerTwo = document.createElement("div");
+    dividerTwo.className = "precut-readout-line two";
     const rangeReadout = document.createElement("div");
-    rangeReadout.className = "precut-range-readout";
-    rangeReadout.title = "Selected IN to OUT duration.";
-    readout.append(tcLabel, playheadInput, divider, ioLabel, rangeReadout);
+    rangeReadout.className = "precut-range-readout row-io";
+    rangeReadout.title = "Selected IN to OUT duration";
+    const frameCountInput = document.createElement("input");
+    frameCountInput.className = "precut-frame-count-input row-frames";
+    frameCountInput.type = "text";
+    frameCountInput.spellcheck = false;
+    frameCountInput.inputMode = "numeric";
+    frameCountInput.maxLength = 7;
+    frameCountInput.title = "The number of frames, type a number and press Enter to edit";
+    readout.append(tcLabel, playheadInput, dividerOne, ioLabel, rangeReadout, dividerTwo, frLabel, frameCountInput);
     const loopBtn = makeButton("loop", "Loop IN to OUT - Shift", icons.loop, () => toggleLoop());
     const logo = document.createElement("div");
     logo.className = "precut-logo";
@@ -1697,6 +1955,7 @@ app.registerExtension({
     transportControls.className = "precut-control-group precut-transport-controls";
     const rightControls = document.createElement("div");
     rightControls.className = "precut-control-group precut-right-controls";
+    const bottomControlButtons = [markInBtn, markOutBtn, firstBtn, prevBtn, playBtn, nextBtn, lastBtn, loopBtn];
     markerControls.append(markInBtn, markOutBtn);
     transportControls.append(firstBtn, prevBtn, playBtn, nextBtn, lastBtn);
     rightControls.append(loopBtn, readout);
@@ -2162,15 +2421,19 @@ app.registerExtension({
     }
 
     function resetMediaEdit() {
-      if (!videoIsEditable()) return;
-      state.edit = defaultMediaEditState();
-      state.crop_memory = null;
-      editMode = "";
-      editOverlay.classList.remove("drawing");
+      const editable = videoIsEditable();
+      const mediaLoaded = hasLoadedMedia();
+      if (editable) {
+        state.edit = defaultMediaEditState();
+        state.crop_memory = null;
+        editMode = "";
+        editOverlay.classList.remove("drawing");
+      }
+      setEffectiveFps(sourceFps(), { persist: false });
       syncWidgetSize(false);
       persist();
       requestAnimationFrame(() => {
-        resetPreviewPosition();
+        if (editable) resetPreviewPosition();
         writeState(stateWidget, state, node);
         render();
       });
@@ -2218,6 +2481,32 @@ app.registerExtension({
       w = Math.sqrt(area * ratio);
       h = Math.sqrt(area / ratio);
       return sanitizeCropPx({ x: centerX - w / 2, y: centerY - h / 2, w, h }, sourceWidth, sourceHeight);
+    }
+
+    function resizeSideCropToAspect(startCrop, resizedCrop, handle, aspect = mediaEdit().aspect) {
+      const ratio = aspectRatioValue(aspect);
+      if (!ratio || !["n", "s", "e", "w"].includes(handle)) return null;
+      const sourceWidth = state.media_width || video.videoWidth || 1;
+      const sourceHeight = state.media_height || video.videoHeight || 1;
+      const start = sanitizeCropPx(startCrop, sourceWidth, sourceHeight);
+      const resized = sanitizeCropPx(resizedCrop, sourceWidth, sourceHeight);
+      const centerX = start.x + start.w / 2;
+      const centerY = start.y + start.h / 2;
+      let { x, y, w, h } = resized;
+
+      if (handle === "w" || handle === "e") {
+        w = Math.max(2, resized.w);
+        h = Math.max(2, w / ratio);
+        y = centerY - h / 2;
+        x = handle === "w" ? start.x + start.w - w : start.x;
+      } else {
+        h = Math.max(2, resized.h);
+        w = Math.max(2, h * ratio);
+        x = centerX - w / 2;
+        y = handle === "n" ? start.y + start.h - h : start.y;
+      }
+
+      return sanitizeCropPx({ x, y, w, h }, sourceWidth, sourceHeight);
     }
 
     function swapCropDimensions(crop) {
@@ -2284,8 +2573,9 @@ app.registerExtension({
       persist();
     }
 
-    function applyResolutionFields() {
+    function applyResolutionFields(options = {}) {
       if (!videoIsEditable()) return;
+      const preserveAspect = Boolean(options.preserveAspect);
       const widthValue = Number(resolutionWidthBox.value.replace(/\D/g, ""));
       const heightValue = Number(resolutionHeightBox.value.replace(/\D/g, ""));
       if (!widthValue || !heightValue) {
@@ -2294,8 +2584,8 @@ app.registerExtension({
       }
       const sourceWidth = state.media_width || video.videoWidth || 1;
       const sourceHeight = state.media_height || video.videoHeight || 1;
-      const width = Math.max(2, Math.min(sourceWidth * 4, widthValue));
-      const height = Math.max(2, Math.min(sourceHeight * 4, heightValue));
+      const width = Math.max(2, Math.min(8192, sourceWidth * 4, widthValue));
+      const height = Math.max(2, Math.min(8192, sourceHeight * 4, heightValue));
       const crop = activeCrop();
       const next = sanitizeCropPx({
         x: crop.x + crop.w / 2 - width / 2,
@@ -2303,8 +2593,13 @@ app.registerExtension({
         w: width,
         h: height,
       }, sourceWidth, sourceHeight);
-      mediaEdit().aspect = "free";
-      setCropState(next);
+      const edit = mediaEdit();
+      if (!preserveAspect) {
+        edit.aspect = "free";
+        setCropState(next);
+      } else {
+        setCropState(resizeCropToAspect(next, edit.aspect));
+      }
       persist();
     }
 
@@ -2313,13 +2608,21 @@ app.registerExtension({
       const crop = activeCrop();
       resolutionWidthBox.value = String(Math.round(crop.h));
       resolutionHeightBox.value = String(Math.round(crop.w));
-      applyResolutionFields();
+      applyResolutionFields({ preserveAspect: mediaEdit().aspect === "1:1" });
     }
 
     function swapRatio() {
       if (!videoIsEditable()) return;
       const edit = mediaEdit();
       if (edit.aspect === "free") return;
+      if (edit.aspect === "1:1") {
+        ratioWidthBox.value = "1";
+        ratioHeightBox.value = "1";
+        edit.custom_ratio = { w: 1, h: 1 };
+        if (cropChanged(activeCrop())) setCropState(resizeCropToAspect(activeCrop(), "1:1"));
+        persist();
+        return;
+      }
       const width = ratioWidthBox.value;
       ratioWidthBox.value = ratioHeightBox.value;
       ratioHeightBox.value = width;
@@ -2350,6 +2653,67 @@ app.registerExtension({
       return state.duration || (state.frame_count / state.fps);
     }
 
+    function validFps(value, fallback = 24) {
+      const fps = Number(value);
+      const fallbackFps = Number(fallback);
+      const safeFallback = Number.isFinite(fallbackFps) && fallbackFps > 0 ? fallbackFps : 24;
+      return Number.isFinite(fps) && fps > 0 ? Math.min(60, fps) : Math.min(60, safeFallback);
+    }
+
+    function sourceFps() {
+      return validFps(state.source_fps, validFps(state.fps, 24));
+    }
+
+    function selectedFrameCount() {
+      return Math.max(1, state.out_frame - state.in_frame + 1);
+    }
+
+    function setEffectiveFps(nextFps, options = {}) {
+      const oldFps = validFps(state.fps, 24);
+      const fps = validFps(nextFps, oldFps);
+      if (Math.abs(fps - oldFps) < 0.000001) {
+        state.fps = fps;
+        if (options.persist !== false) persist();
+        return;
+      }
+      const mediaDuration = duration();
+      const inSeconds = state.in_frame / oldFps;
+      const outSeconds = state.out_frame / oldFps;
+      const headSeconds = video.currentTime || 0;
+      state.fps = fps;
+      state.frame_count = Math.max(1, Math.round(mediaDuration * fps));
+      state.in_frame = Math.max(0, Math.min(state.frame_count - 1, Math.round(inSeconds * fps)));
+      state.out_frame = Math.max(state.in_frame, Math.min(state.frame_count - 1, Math.round(outSeconds * fps)));
+      if (Number.isFinite(headSeconds)) video.currentTime = Math.max(0, Math.min(mediaDuration, headSeconds));
+      if (options.persist !== false) persist();
+    }
+
+    function setSelectedFrameCount(value) {
+      const count = Math.max(1, Math.floor(Number(value) || 1));
+      state.out_frame = Math.max(state.in_frame, Math.min(state.frame_count - 1, state.in_frame + count - 1));
+      persist();
+      frameCountInput.value = String(selectedFrameCount());
+    }
+
+    function applyMediaMetadata(metadata = {}, fallbackFps = 24) {
+      const source = validFps(metadata.source_fps, validFps(state.source_fps, fallbackFps));
+      const fps = validFps(metadata.fps, source);
+      const mediaDuration = Number(metadata.duration);
+      const frameCount = Number(metadata.frame_count);
+      state.source_fps = source;
+      state.fps = fps;
+      if (Number.isFinite(mediaDuration) && mediaDuration > 0) state.duration = mediaDuration;
+      if (Number.isFinite(frameCount) && frameCount > 0) {
+        state.frame_count = Math.max(1, Math.round(frameCount * (fps / source)));
+      } else if (state.duration > 0) {
+        state.frame_count = Math.max(1, Math.round(state.duration * fps));
+      }
+      if (Number(metadata.media_width) > 0) state.media_width = Number(metadata.media_width);
+      if (Number(metadata.media_height) > 0) state.media_height = Number(metadata.media_height);
+      state.in_frame = 0;
+      state.out_frame = Math.max(0, state.frame_count - 1);
+    }
+
     function currentFrame() {
       return Math.max(0, Math.min(state.frame_count - 1, Math.round((video.currentTime || 0) * state.fps)));
     }
@@ -2374,6 +2738,18 @@ app.registerExtension({
       const visible = end - start;
       setVisibleRange(frame - visible / 2, frame + visible / 2);
       markWaveformDirty();
+    }
+
+    function centerTimelineOnSelection() {
+      if (!hasLoadedMedia()) return;
+      const total = timelineTotalSpan();
+      const inFrame = Math.max(0, Math.min(state.in_frame, state.out_frame));
+      const outFrame = Math.min(total, Math.max(state.in_frame, state.out_frame));
+      const range = Math.max(1, outFrame - inFrame);
+      const padding = Math.max(MIN_VISIBLE_FRAME_SPAN, range * 0.2, state.fps || 24);
+      setVisibleRange(inFrame - padding, outFrame + padding);
+      markWaveformDirty();
+      scheduleRender();
     }
 
     function frameIsVisible(frame) {
@@ -2712,7 +3088,18 @@ app.registerExtension({
       return event.clientY - rect.top <= 42;
     }
 
+    function hasLoadedMedia() {
+      return Boolean(state.video_path || state.video_url || state.media_type === "inputs");
+    }
+
     function renderTimecodes() {
+      if (!hasLoadedMedia()) {
+        const key = "empty";
+        if (key === lastTimecodesKey) return;
+        lastTimecodesKey = key;
+        timecodes.innerHTML = Array.from({ length: 6 }, () => "<span>00:00:00:00</span>").join("");
+        return;
+      }
       const [start, end] = visibleRange();
       const points = [0, 0.2, 0.4, 0.6, 0.8, 1].map((p) => Math.round(start + (end - start) * p));
       const head = currentFrame();
@@ -2990,21 +3377,25 @@ app.registerExtension({
 
     function syncMediaEditOverlay() {
       const editable = videoIsEditable();
+      const mediaLoaded = hasLoadedMedia();
       if (!editable) editMode = "";
       const edit = mediaEdit();
       const display = videoDisplayRect();
       const cropRect = cropDisplayRect();
       const output = outputResolution();
+      const fpsChanged = Math.abs(validFps(state.fps, 24) - sourceFps()) > 0.0001;
 
-      mediaTools.classList.toggle("disabled", !editable);
-      mediaTools.classList.toggle("crop-inactive", editable && editMode !== "crop");
-      mediaTools.classList.toggle("reset-inactive", editable && editMode !== "crop" && !previewPositionChanged(edit) && !(state.crop_memory && typeof state.crop_memory === "object"));
+      mediaTools.classList.toggle("disabled", !mediaLoaded);
+      mediaTools.classList.toggle("crop-inactive", !editable || editMode !== "crop");
+      mediaTools.classList.toggle("reset-inactive", mediaLoaded && editMode !== "crop" && !fpsChanged && !previewPositionChanged(edit) && !(state.crop_memory && typeof state.crop_memory === "object"));
       cropCustomBtn.classList.toggle("active", editMode === "crop");
       videoWrap.style.backgroundColor = edit.background;
       backgroundMenuBtn.style.setProperty("--precut-bg-swatch", edit.background);
+      const presetColors = new Set(["#000000", "#FFFFFF", "#808080"]);
       [backgroundBlackBtn, backgroundWhiteBtn, backgroundGrayBtn].forEach((button) => {
         button.classList.toggle("active", sanitizeColor(button.dataset.color) === edit.background);
       });
+      backgroundColor.classList.toggle("active", !presetColors.has(edit.background));
       if (document.activeElement !== backgroundColor) backgroundColor.value = edit.background;
       if (document.activeElement !== backgroundCode) backgroundCode.value = edit.background;
       if (document.activeElement !== ratioSelect) {
@@ -3017,6 +3408,9 @@ app.registerExtension({
       if (!resolutionBoxes.includes(document.activeElement)) {
         resolutionWidthBox.value = output.width ? String(output.width) : "--";
         resolutionHeightBox.value = output.height ? String(output.height) : "--";
+      }
+      if (document.activeElement !== fpsInput) {
+        fpsInput.value = fmtFps(validFps(state.fps, 24));
       }
       if (!ratioBoxes.includes(document.activeElement)) {
         ratioWidthBox.value = String(edit.custom_ratio.w);
@@ -3061,6 +3455,7 @@ app.registerExtension({
     }
 
     function render() {
+      const mediaLoaded = hasLoadedMedia();
       state.in_frame = Math.max(0, Math.min(state.in_frame, state.frame_count - 1));
       state.out_frame = Math.max(state.in_frame, Math.min(state.out_frame, state.frame_count - 1));
       const [visibleStart, visibleEnd] = visibleRange();
@@ -3085,15 +3480,29 @@ app.registerExtension({
       timeline.style.setProperty("--in-label-top", "28px");
       timeline.style.setProperty("--out-label-top", "calc(100% - 50px)");
       timeline.style.setProperty("--playhead", `${headPct}%`);
+      const timelineWidth = Math.max(1, timeline.clientWidth || timeline.getBoundingClientRect().width || 1);
+      timeline.style.setProperty("--playhead-px", `${Math.round((headPct / 100) * timelineWidth)}px`);
+      timeline.classList.toggle("empty", !mediaLoaded);
+      timecodes.classList.toggle("inactive", !mediaLoaded);
+      controls.classList.toggle("inactive", !mediaLoaded);
+      readout.classList.toggle("inactive", !mediaLoaded);
+      for (const button of bottomControlButtons) {
+        button.disabled = !mediaLoaded;
+      }
+      playheadInput.disabled = !mediaLoaded;
+      frameCountInput.disabled = !mediaLoaded;
       inOffscreenIndicator.classList.toggle("visible", state.in_frame < visibleStart);
       outOffscreenIndicator.classList.toggle("visible", state.out_frame > visibleEnd);
       if (document.activeElement !== playheadInput) {
-        playheadInput.value = fmtTime(frameToSeconds(currentFrame()), state.fps);
+        playheadInput.value = mediaLoaded ? fmtTime(frameToSeconds(currentFrame()), state.fps) : "00:00:00:00";
       }
       const speed = shuttleDirection ? SHUTTLE_SPEEDS[shuttleStep] : (video.paused ? 1 : video.playbackRate || 1);
       speedReadout.textContent = `${speed}x`;
       speedReadout.classList.toggle("visible", speed > 1);
-      rangeReadout.textContent = fmtTime((state.out_frame - state.in_frame + 1) / state.fps, state.fps);
+      rangeReadout.textContent = mediaLoaded ? fmtTime(selectedFrameCount() / state.fps, state.fps) : "00:00:00:00";
+      if (document.activeElement !== frameCountInput) {
+        frameCountInput.value = mediaLoaded ? String(selectedFrameCount()) : "0";
+      }
       const audioOnly = state.media_type === "audio";
       placeholder.style.display = state.video_url && !audioOnly ? "none" : "flex";
       video.style.opacity = audioOnly ? "0" : "1";
@@ -3105,10 +3514,15 @@ app.registerExtension({
     node._precutRender = render;
 
     function setMetadataFromVideo() {
+      if (state.media_type === "audio") {
+        render();
+        return;
+      }
       const videoDuration = Number.isFinite(video.duration) ? video.duration : 0;
-      state.duration = videoDuration;
-      state.fps = state.fps || 24;
-      state.frame_count = Math.max(1, Math.round(videoDuration * state.fps));
+      if (videoDuration > 0) state.duration = videoDuration;
+      state.source_fps = sourceFps();
+      state.fps = validFps(state.fps, state.source_fps);
+      state.frame_count = Math.max(1, Math.round((state.duration || videoDuration || 0) * state.fps));
       state.media_width = video.videoWidth || state.media_width || 0;
       state.media_height = video.videoHeight || state.media_height || 0;
       if (!state.out_frame || state.out_frame >= state.frame_count) {
@@ -3183,6 +3597,10 @@ app.registerExtension({
         crop_memory: null,
         edit: { crop: null, crop_px: null, scale: 1, rotation: 0, preview_zoom: 1, preview_pan_x: 0, preview_pan_y: 0, aspect: "free", custom_ratio: { w: 1, h: 1 }, background: "#000000" },
       };
+      applyMediaMetadata(
+        mediaType === "audio" ? { ...result, source_fps: DEFAULT_AUDIO_FPS, fps: DEFAULT_AUDIO_FPS, frame_count: 0 } : result,
+        mediaType === "audio" ? DEFAULT_AUDIO_FPS : 24
+      );
       if (mediaType === "audio") {
         setPlaceholder(`Audio loaded: ${result.name}`, "audio");
       }
@@ -3197,6 +3615,7 @@ app.registerExtension({
       root.classList.add("loaded");
       setTimeout(() => root.classList.remove("loaded"), 1800);
       persist();
+      render();
     }
 
     function connectedMediaInputs() {
@@ -3253,6 +3672,10 @@ app.registerExtension({
             crop_memory: null,
             edit: { crop: null, crop_px: null, scale: 1, rotation: 0, preview_zoom: 1, preview_pan_x: 0, preview_pan_y: 0, aspect: "free", custom_ratio: { w: 1, h: 1 }, background: "#000000" },
           };
+          applyMediaMetadata(
+            mediaType === "audio" ? { ...result, source_fps: DEFAULT_AUDIO_FPS, fps: DEFAULT_AUDIO_FPS, frame_count: 0 } : result,
+            mediaType === "audio" ? DEFAULT_AUDIO_FPS : 24
+          );
           if (mediaType === "audio") {
             setPlaceholder(`Audio loaded: ${result.name}`, "audio");
           }
@@ -3263,6 +3686,7 @@ app.registerExtension({
           root.classList.add("loaded");
           setTimeout(() => root.classList.remove("loaded"), 1800);
           persist();
+          render();
           return;
         }
 
@@ -3278,8 +3702,13 @@ app.registerExtension({
           crop_memory: null,
           edit: { crop: null, crop_px: null, scale: 1, rotation: 0, preview_zoom: 1, preview_pan_x: 0, preview_pan_y: 0, aspect: "free", custom_ratio: { w: 1, h: 1 }, background: "#000000" },
         };
+        if (connected.audio) {
+          state.fps = DEFAULT_AUDIO_FPS;
+          state.source_fps = DEFAULT_AUDIO_FPS;
+        }
         if (sourceNodes.length && state.frame_count <= 1) {
           state.fps = state.fps || 24;
+          state.source_fps = state.source_fps || state.fps;
           state.frame_count = state.fps * 60;
           state.in_frame = 0;
           state.out_frame = state.frame_count - 1;
@@ -3294,6 +3723,7 @@ app.registerExtension({
         root.classList.add("loaded");
         setTimeout(() => root.classList.remove("loaded"), 1800);
         persist();
+        render();
       } catch (err) {
         setProgress(0, false);
         setPlaceholder(err.message || String(err));
@@ -3681,10 +4111,62 @@ app.registerExtension({
       playheadPairEditDigits = "";
       playheadInput.select();
     });
+    function commitFpsInput() {
+      const fps = validFps(fpsInput.value, validFps(state.fps, sourceFps()));
+      setEffectiveFps(fps);
+      fpsInput.value = fmtFps(validFps(state.fps, 24));
+      fpsInput.blur();
+    }
+    fpsInput.addEventListener("input", () => {
+      let value = fpsInput.value.replace(/[^\d.]/g, "");
+      const firstDot = value.indexOf(".");
+      if (firstDot !== -1) {
+        value = value.slice(0, firstDot + 1) + value.slice(firstDot + 1).replace(/\./g, "");
+      }
+      const parts = value.split(".");
+      const whole = (parts[0] || "").slice(0, 2);
+      const decimals = parts.length > 1 ? parts[1].slice(0, 2) : "";
+      fpsInput.value = parts.length > 1 ? `${whole}.${decimals}`.slice(0, 5) : whole;
+    });
+    fpsInput.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Enter") {
+        commitFpsInput();
+        event.preventDefault();
+      } else if (event.key === "Escape") {
+        fpsInput.value = fmtFps(validFps(state.fps, 24));
+        fpsInput.blur();
+        event.preventDefault();
+      }
+    });
+    fpsInput.addEventListener("change", commitFpsInput);
+    fpsInput.addEventListener("mousedown", (event) => event.stopPropagation());
+    fpsInput.addEventListener("focus", () => fpsInput.select());
+    function commitFrameCountInput() {
+      setSelectedFrameCount(frameCountInput.value);
+      frameCountInput.blur();
+    }
+    frameCountInput.addEventListener("input", () => {
+      frameCountInput.value = frameCountInput.value.replace(/\D/g, "").slice(0, 7);
+    });
+    frameCountInput.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Enter") {
+        commitFrameCountInput();
+        event.preventDefault();
+      } else if (event.key === "Escape") {
+        frameCountInput.value = String(selectedFrameCount());
+        frameCountInput.blur();
+        event.preventDefault();
+      }
+    });
+    frameCountInput.addEventListener("change", commitFrameCountInput);
+    frameCountInput.addEventListener("mousedown", (event) => event.stopPropagation());
+    frameCountInput.addEventListener("focus", () => frameCountInput.select());
     resolutionBoxes.forEach((box) => {
       box.addEventListener("mousedown", (event) => event.stopPropagation());
       box.addEventListener("input", () => {
-        box.value = box.value.replace(/\D/g, "").slice(0, 5);
+        box.value = box.value.replace(/\D/g, "").slice(0, 4);
       });
       box.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
@@ -3890,7 +4372,10 @@ app.registerExtension({
           }
         }
         let crop = sanitizeCropPx({ x, y, w, h }, display.sourceWidth, display.sourceHeight);
-        if (["nw", "ne", "sw", "se"].includes(editDrag.handle) || (edit.aspect !== "free" && edit.aspect !== "custom")) {
+        const sideAspectCrop = resizeSideCropToAspect(editDrag.startCrop, crop, editDrag.handle, edit.aspect);
+        if (sideAspectCrop) {
+          crop = sideAspectCrop;
+        } else if (["nw", "ne", "sw", "se"].includes(editDrag.handle) || (edit.aspect !== "free" && edit.aspect !== "custom")) {
           const anchorMap = { n: "s", s: "n", w: "e", e: "w", nw: "se", ne: "sw", sw: "ne", se: "nw" };
           const anchor = anchorMap[editDrag.handle] || "center";
           const aspect = ["nw", "ne", "sw", "se"].includes(editDrag.handle)
@@ -3942,6 +4427,24 @@ app.registerExtension({
     });
     window.addEventListener("mousemove", updateMediaEditDrag, true);
     window.addEventListener("mouseup", () => endMediaEditDrag(), true);
+
+    [inOffscreenIndicator, outOffscreenIndicator].forEach((indicator) => {
+      indicator.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      indicator.addEventListener("click", (event) => {
+        centerTimelineOnSelection();
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      indicator.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        centerTimelineOnSelection();
+        event.preventDefault();
+        event.stopPropagation();
+      });
+    });
 
     timeline.addEventListener("mousemove", (event) => {
       hoverFrame = frameFromEvent(event);
@@ -4186,6 +4689,9 @@ app.registerExtension({
         event.stopPropagation();
         event.stopImmediatePropagation?.();
       }
+
+      const mediaShortcut = ["i", "o", "j", "k", "l", "+", "=", "-", "_", "shift", "arrowdown", "arrowup", "arrowleft", "arrowright"].includes(key) || event.code === "Space";
+      if (mediaShortcut && !hasLoadedMedia()) return;
 
       if (key === "i") {
         markIn();

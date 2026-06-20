@@ -71,7 +71,7 @@ def _input_relative_payload(path):
     subfolder = Path(relative).parent.as_posix()
     if subfolder == ".":
         subfolder = ""
-    return {
+    payload = {
         "name": filename,
         "subfolder": subfolder,
         "type": "input",
@@ -79,6 +79,59 @@ def _input_relative_payload(path):
         "url": f"/view?filename={filename}&subfolder={subfolder}&type=input",
         "media_type": "audio" if resolved.suffix.lower() in AUDIO_EXTENSIONS else "video",
     }
+    payload.update(_media_metadata_payload(resolved))
+    return payload
+
+
+def _parse_ffmpeg_duration(text):
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
+    if not match:
+        return 0.0
+    hours, minutes, seconds = match.groups()
+    return int(hours) * 3600.0 + int(minutes) * 60.0 + float(seconds)
+
+
+def _parse_ffmpeg_fps(text):
+    matches = re.findall(r"(\d+(?:\.\d+)?)\s*fps", text)
+    for value in matches:
+        fps = float(value)
+        if fps > 0:
+            return fps
+    return 0.0
+
+
+def _parse_ffmpeg_size(text):
+    video_lines = [line for line in text.splitlines() if "Video:" in line]
+    for line in video_lines:
+        match = re.search(r"(?<!\d)(\d{2,6})x(\d{2,6})(?!\d)", line)
+        if match:
+            return int(match.group(1)), int(match.group(2))
+    return 0, 0
+
+
+def _media_metadata_payload(path):
+    try:
+        ffmpeg = _find_ffmpeg()
+        result = subprocess.run(
+            [ffmpeg, "-hide_banner", "-i", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        text = result.stderr.decode("utf-8", errors="replace")
+        duration = _parse_ffmpeg_duration(text)
+        fps = _parse_ffmpeg_fps(text)
+        width, height = _parse_ffmpeg_size(text)
+        frame_count = int(round(duration * fps)) if duration > 0 and fps > 0 else 0
+        return {
+            "source_fps": fps,
+            "duration": duration,
+            "frame_count": frame_count,
+            "media_width": width,
+            "media_height": height,
+        }
+    except Exception:
+        return {}
 
 
 @PromptServer.instance.routes.post("/precut/upload_video")
@@ -108,16 +161,16 @@ async def upload_video(request):
                 break
             output.write(chunk)
 
-    return web.json_response(
-        {
-            "name": filename,
-            "subfolder": "PRECUT",
-            "type": "input",
-            "path": f"PRECUT/{filename}",
-            "url": f"/view?filename={filename}&subfolder=PRECUT&type=input",
-            "media_type": "audio" if ext in AUDIO_EXTENSIONS else "video",
-        }
-    )
+    payload = {
+        "name": filename,
+        "subfolder": "PRECUT",
+        "type": "input",
+        "path": f"PRECUT/{filename}",
+        "url": f"/view?filename={filename}&subfolder=PRECUT&type=input",
+        "media_type": "audio" if ext in AUDIO_EXTENSIONS else "video",
+    }
+    payload.update(_media_metadata_payload(destination))
+    return web.json_response(payload)
 
 
 @PromptServer.instance.routes.post("/precut/register_video_path")
@@ -171,16 +224,16 @@ async def register_video_path(request):
     filename, destination = _unique_destination(destination_dir, _safe_filename(source.name))
     shutil.copy2(source, destination)
 
-    return web.json_response(
-        {
-            "name": filename,
-            "subfolder": "PRECUT",
-            "type": "input",
-            "path": f"PRECUT/{filename}",
-            "url": f"/view?filename={filename}&subfolder=PRECUT&type=input",
-            "media_type": "audio" if ext in AUDIO_EXTENSIONS else "video",
-        }
-    )
+    payload = {
+        "name": filename,
+        "subfolder": "PRECUT",
+        "type": "input",
+        "path": f"PRECUT/{filename}",
+        "url": f"/view?filename={filename}&subfolder=PRECUT&type=input",
+        "media_type": "audio" if ext in AUDIO_EXTENSIONS else "video",
+    }
+    payload.update(_media_metadata_payload(destination))
+    return web.json_response(payload)
 
 
 @PromptServer.instance.routes.get("/precut/waveform")

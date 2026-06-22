@@ -1485,18 +1485,55 @@ function clampMediaSpecsNodeSize(node, size = node?.size) {
   return size;
 }
 
+const MEDIA_SPECS_OUTPUT_NAMES = ["fps", "width", "height", "frames", "duration"];
+
+function mediaSpecsUiValues(message) {
+  const candidates = [
+    message,
+    message?.text,
+    message?.ui?.text,
+    message?.output?.text,
+    message?.outputs?.text,
+    message?.detail?.output?.text,
+    message?.detail?.ui?.text,
+    message?.detail?.text,
+  ];
+  return candidates.find((value) => Array.isArray(value)) || [];
+}
+
+function updateMediaSpecsLabels(node, values = []) {
+  if (!isMediaSpecsNode(node)) return;
+  for (let i = 0; i < MEDIA_SPECS_OUTPUT_NAMES.length; i++) {
+    if (!node.outputs?.[i]) continue;
+    const name = MEDIA_SPECS_OUTPUT_NAMES[i];
+    const value = values[i];
+    node.outputs[i].label = value !== undefined && value !== null && value !== ""
+      ? `${value} : ${name}`
+      : name;
+  }
+  app.graph?.setDirtyCanvas?.(true, true);
+}
+
 app.registerExtension({
   name: "PRECUT.UI",
+  async setup() {
+    api.addEventListener("executed", (event) => {
+      const detail = event?.detail || {};
+      const nodeId = detail.node ?? detail.node_id;
+      const node = app.graph?.getNodeById?.(Number(nodeId)) || app.graph?.getNodeById?.(nodeId);
+      if (!isMediaSpecsNode(node)) return;
+      updateMediaSpecsLabels(node, mediaSpecsUiValues(detail.output || detail));
+    });
+  },
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData?.name !== "PRECUTVideoInfo") return;
     applyMediaSpecsSizeLimits(nodeType);
     applyMediaSpecsSizeLimits(nodeType.prototype);
 
-    const outputNames = ["fps", "width", "height", "frames", "duration"];
     function resetVideoInfoLabels(node) {
-      for (let i = 0; i < outputNames.length; i++) {
+      for (let i = 0; i < MEDIA_SPECS_OUTPUT_NAMES.length; i++) {
         if (!node.outputs?.[i]) continue;
-        node.outputs[i].label = outputNames[i];
+        node.outputs[i].label = MEDIA_SPECS_OUTPUT_NAMES[i];
       }
     }
 
@@ -1510,14 +1547,7 @@ app.registerExtension({
     const originalOnExecuted = nodeType.prototype.onExecuted;
     nodeType.prototype.onExecuted = function (message) {
       const result = originalOnExecuted?.apply(this, arguments);
-      const values = Array.isArray(message?.text) ? message.text : [];
-      for (let i = 0; i < outputNames.length; i++) {
-        if (!this.outputs?.[i]) continue;
-        const value = values[i];
-        this.outputs[i].label = value !== undefined && value !== null && value !== ""
-          ? `${value} : ${outputNames[i]}`
-          : outputNames[i];
-      }
+      updateMediaSpecsLabels(this, mediaSpecsUiValues(message));
       return result;
     };
 
@@ -1532,6 +1562,7 @@ app.registerExtension({
   async nodeCreated(node) {
     if (isMediaSpecsNode(node)) {
       clampMediaSpecsNodeSize(node);
+      updateMediaSpecsLabels(node);
       return;
     }
     if (node.comfyClass !== "PRECUT") return;

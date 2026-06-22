@@ -64,31 +64,6 @@ def _run_interruptible_subprocess(args, cleanup_paths=()):
         raise
 
 
-def _output_is_connected(prompt, unique_id, output_index, default=True):
-    if prompt is None or unique_id is None:
-        return default
-    node_id = str(unique_id)
-
-    def has_link(value):
-        if isinstance(value, (list, tuple)) and len(value) >= 2:
-            return str(value[0]) == node_id and int(value[1]) == int(output_index)
-        if isinstance(value, dict):
-            return any(has_link(item) for item in value.values())
-        if isinstance(value, (list, tuple)):
-            return any(has_link(item) for item in value)
-        return False
-
-    try:
-        nodes = prompt.values() if isinstance(prompt, dict) else prompt
-        for node in nodes:
-            inputs = node.get("inputs", {}) if isinstance(node, dict) else {}
-            if has_link(inputs):
-                return True
-        return False
-    except Exception:
-        return default
-
-
 def _find_ffmpeg():
     forced = os.environ.get("PRECUT_FFMPEG_PATH") or os.environ.get("VHS_FORCE_FFMPEG_PATH")
     candidates = []
@@ -670,9 +645,6 @@ class PRECUT:
     def cut(self, precut_state="{}", video=None, audio=None, unique_id=None, prompt=None):
         _throw_if_interrupted()
         state = _parse_state(precut_state)
-        want_video = _output_is_connected(prompt, unique_id, 0)
-        want_images = _output_is_connected(prompt, unique_id, 1)
-        want_audio = _output_is_connected(prompt, unique_id, 2)
         fps = float(state.get("fps") or 24.0)
         if not math.isfinite(fps) or fps <= 0:
             fps = 24.0
@@ -694,16 +666,10 @@ class PRECUT:
         video_path = state.get("video_path") or _video_path_from_value(video)
         _throw_if_interrupted()
 
-        if not want_video and not want_images and not want_audio:
-            return (None, None, None, video_info)
-
         if video is not None and not video_path:
-            if not want_video and not want_images:
-                audio_out = _trim_audio(_audio_from_video_object(video), start_seconds, duration) if want_audio else None
-                return (None, None, audio_out, video_info)
             video_out = _trim_video_object(video, start_seconds, duration, fps)
-            images_out = _images_from_video_object(video_out) if want_images else None
-            audio_out = _audio_from_video_object(video_out) if want_audio else None
+            images_out = _images_from_video_object(video_out)
+            audio_out = _audio_from_video_object(video_out)
             return (video_out, images_out, audio_out, video_info)
 
         if not video_path and audio is not None:
@@ -713,7 +679,7 @@ class PRECUT:
                 duration = min(duration, max(0.0, audio_total - start_seconds))
                 frame_count = max(0, int(round(duration * fps)))
                 video_info = _video_info(state, duration, fps, frame_count)
-            audio_out = _trim_audio(audio, start_seconds, duration) if want_audio else None
+            audio_out = _trim_audio(audio, start_seconds, duration)
             return (None, None, audio_out, video_info)
 
         if not video_path:
@@ -723,18 +689,14 @@ class PRECUT:
         _throw_if_interrupted()
 
         if state.get("media_type") == "audio" or _is_audio_path(resolved):
-            loaded_audio = _load_audio_segment(resolved, start_seconds, duration) if want_audio else None
+            loaded_audio = _load_audio_segment(resolved, start_seconds, duration)
             return (None, None, loaded_audio, video_info)
 
-        video_out = None
-        images_out = None
-        if want_video or want_images:
-            video_source, video_start, video_duration = _process_video_file(resolved, state, start_seconds, duration, fps)
-            if want_video:
-                video_out = InputImpl.VideoFromFile(video_source, start_time=video_start, duration=video_duration)
-                _throw_if_interrupted()
-            images_out = _load_image_segment(video_source, video_start, video_duration, fps, frame_count) if want_images else None
-        loaded_audio = _load_audio_segment(resolved, start_seconds, duration) if want_audio else None
+        video_source, video_start, video_duration = _process_video_file(resolved, state, start_seconds, duration, fps)
+        video_out = InputImpl.VideoFromFile(video_source, start_time=video_start, duration=video_duration)
+        _throw_if_interrupted()
+        images_out = _load_image_segment(video_source, video_start, video_duration, fps, frame_count)
+        loaded_audio = _load_audio_segment(resolved, start_seconds, duration)
         return (video_out, images_out, loaded_audio, video_info)
 
     @classmethod

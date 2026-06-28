@@ -23,6 +23,7 @@ except Exception:
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".opus"}
 PRECUT_VIDEO_INFO_TYPE = "PRECUT_VIDEO_INFO"
+FRAME_DURATION_PRIORITY_TOOLTIP = "Frames is prioritized when both frames and duration are connected."
 
 
 def _throw_if_interrupted():
@@ -370,6 +371,27 @@ def _video_info(state, duration, fps, frame_count):
     }
 
 
+def _normalize_video_info(video_info):
+    if not isinstance(video_info, dict):
+        video_info = {}
+    return {
+        "duration": float(video_info.get("duration") or 0.0),
+        "fps": float(video_info.get("fps") or 0.0),
+        "length": int(video_info.get("length") or video_info.get("frames") or 0),
+        "width": int(video_info.get("width") or 0),
+        "height": int(video_info.get("height") or 0),
+    }
+
+
+def _merge_video_info(primary, fallback=None):
+    primary = _normalize_video_info(primary)
+    fallback = _normalize_video_info(fallback)
+    return {
+        key: primary[key] if primary[key] not in (0, 0.0) else fallback[key]
+        for key in ("duration", "fps", "length", "width", "height")
+    }
+
+
 def _source_fps(state, fallback):
     try:
         fps = float(state.get("source_fps") or fallback)
@@ -629,6 +651,7 @@ class PRECUT:
             "optional": {
                 "video": ("VIDEO",),
                 "audio": ("AUDIO",),
+                "media_specs_in": (PRECUT_VIDEO_INFO_TYPE, {"display_name": "media specs IN"}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -637,12 +660,12 @@ class PRECUT:
         }
 
     RETURN_TYPES = ("VIDEO", "IMAGE", "AUDIO", PRECUT_VIDEO_INFO_TYPE)
-    RETURN_NAMES = ("video", "images", "audio", "media specs")
+    RETURN_NAMES = ("video", "images", "audio", "media specs OUT")
     FUNCTION = "cut"
     CATEGORY = "PRECUT"
     DESCRIPTION = "Editor Edit Video Editor Audio Editor Cut Cutter Trim Trimmer Loader Load Video Audio"
 
-    def cut(self, precut_state="{}", video=None, audio=None, unique_id=None, prompt=None):
+    def cut(self, precut_state="{}", video=None, audio=None, media_specs_in=None, unique_id=None, prompt=None):
         _throw_if_interrupted()
         state = _parse_state(precut_state)
         fps = float(state.get("fps") or 24.0)
@@ -658,7 +681,7 @@ class PRECUT:
         frame_count = max(1, out_frame - in_frame + 1)
         duration = frame_count / fps
         start_seconds = in_frame / fps
-        video_info = _video_info(state, duration, fps, frame_count)
+        video_info = _merge_video_info(_video_info(state, duration, fps, frame_count), media_specs_in)
 
         if video is not None and audio is not None:
             raise RuntimeError("PRECUT: connect either VIDEO or AUDIO input, not both.")
@@ -678,7 +701,7 @@ class PRECUT:
             if audio_total > 0:
                 duration = min(duration, max(0.0, audio_total - start_seconds))
                 frame_count = max(0, int(round(duration * fps)))
-                video_info = _video_info(state, duration, fps, frame_count)
+                video_info = _merge_video_info(_video_info(state, duration, fps, frame_count), media_specs_in)
             audio_out = _trim_audio(audio, start_seconds, duration)
             return (None, None, audio_out, video_info)
 
@@ -716,7 +739,7 @@ class PRECUT:
 class PRECUTVideoInfo:
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {"video_info": (PRECUT_VIDEO_INFO_TYPE, {"display_name": "media specs"})}}
+        return {"required": {"video_info": (PRECUT_VIDEO_INFO_TYPE, {"display_name": "media specs OUT"})}}
 
     RETURN_TYPES = ("FLOAT", "INT", "INT", "INT", "FLOAT")
     RETURN_NAMES = ("fps", "width", "height", "frames", "duration")
@@ -726,8 +749,7 @@ class PRECUTVideoInfo:
 
     @staticmethod
     def _values(video_info):
-        if not isinstance(video_info, dict):
-            video_info = {}
+        video_info = _normalize_video_info(video_info)
         return (
             float(video_info.get("fps") or 0.0),
             int(video_info.get("width") or 0),
@@ -762,14 +784,64 @@ class PRECUTVideoInfo:
         }
 
 
+class PRECUTMediaSpecsIn:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "fps": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 60.0, "step": 0.01}),
+                "width": ("INT", {"default": 0, "min": 0, "max": 8192}),
+                "height": ("INT", {"default": 0, "min": 0, "max": 8192}),
+                "frames": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 9999999,
+                        "tooltip": FRAME_DURATION_PRIORITY_TOOLTIP,
+                    },
+                ),
+                "duration": (
+                    "FLOAT",
+                    {
+                        "default": 0.0,
+                        "min": 0.0,
+                        "step": 0.01,
+                        "tooltip": FRAME_DURATION_PRIORITY_TOOLTIP,
+                    },
+                ),
+            }
+        }
+
+    RETURN_TYPES = (PRECUT_VIDEO_INFO_TYPE,)
+    RETURN_NAMES = ("media specs IN",)
+    FUNCTION = "make_video_info"
+    CATEGORY = "PRECUT"
+
+    def make_video_info(self, fps=0.0, width=0, height=0, frames=0, duration=0.0):
+        return (
+            _normalize_video_info(
+                {
+                    "fps": fps,
+                    "width": width,
+                    "height": height,
+                    "length": frames,
+                    "duration": duration,
+                }
+            ),
+        )
+
+
 NODE_CLASS_MAPPINGS = {
     "PRECUT": PRECUT,
     "PRECUTVideoInfo": PRECUTVideoInfo,
+    "PRECUTMediaSpecsIn": PRECUTMediaSpecsIn,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PRECUT": "PRECUT",
-    "PRECUTVideoInfo": "PRECUT Media Specs",
+    "PRECUTVideoInfo": "PRECUT Media Specs OUT",
+    "PRECUTMediaSpecsIn": "PRECUT Media Specs IN",
 }
 
 
@@ -799,23 +871,24 @@ class PRECUTV2(io.ComfyNode):
                 io.String.Input("precut_state", multiline=True, default="{}"),
                 io.Video.Input("video", optional=True),
                 io.Audio.Input("audio", optional=True),
+                io.Custom(PRECUT_VIDEO_INFO_TYPE).Input("media_specs_in", display_name="media specs IN", optional=True),
             ],
             outputs=[
                 io.Video.Output(display_name="video"),
                 io.Image.Output(display_name="images"),
                 io.Audio.Output(display_name="audio"),
-                io.Custom(PRECUT_VIDEO_INFO_TYPE).Output(display_name="media specs"),
+                io.Custom(PRECUT_VIDEO_INFO_TYPE).Output(display_name="media specs OUT"),
             ],
             hidden=[io.Hidden.unique_id, io.Hidden.prompt],
         )
 
     @classmethod
-    def execute(cls, precut_state="{}", video=None, audio=None, **kwargs) -> io.NodeOutput:
+    def execute(cls, precut_state="{}", video=None, audio=None, media_specs_in=None, **kwargs) -> io.NodeOutput:
         hidden = getattr(cls, "hidden", None)
         if hidden is not None:
             kwargs.setdefault("unique_id", hidden.unique_id)
             kwargs.setdefault("prompt", hidden.prompt)
-        return io.NodeOutput(*PRECUT().cut(precut_state=precut_state, video=video, audio=audio, **kwargs))
+        return io.NodeOutput(*PRECUT().cut(precut_state=precut_state, video=video, audio=audio, media_specs_in=media_specs_in, **kwargs))
 
     @classmethod
     def fingerprint_inputs(cls, precut_state="{}", **kwargs):
@@ -827,12 +900,12 @@ class PRECUTVideoInfoV2(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="PRECUTVideoInfo",
-            display_name="PRECUT Media Specs",
+            display_name="PRECUT Media Specs OUT",
             category="PRECUT",
             description="Expose PRECUT media selection metadata as separate values.",
             is_output_node=True,
             inputs=[
-                io.Custom(PRECUT_VIDEO_INFO_TYPE).Input("video_info", display_name="media specs"),
+                io.Custom(PRECUT_VIDEO_INFO_TYPE).Input("video_info", display_name="media specs OUT"),
             ],
             outputs=[
                 io.Float.Output(display_name="fps"),
@@ -849,9 +922,34 @@ class PRECUTVideoInfoV2(io.ComfyNode):
         return io.NodeOutput(*values, ui=PRECUTVideoInfo._ui(values))
 
 
+class PRECUTMediaSpecsInV2(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="PRECUTMediaSpecsIn",
+            display_name="PRECUT Media Specs IN",
+            category="PRECUT",
+            description="Build PRECUT media specs from separate values.",
+            inputs=[
+                io.Float.Input("fps", default=0.0, min=0.0, max=60.0, step=0.01),
+                io.Int.Input("width", default=0, min=0, max=8192),
+                io.Int.Input("height", default=0, min=0, max=8192),
+                io.Int.Input("frames", default=0, min=0, max=9999999, tooltip=FRAME_DURATION_PRIORITY_TOOLTIP),
+                io.Float.Input("duration", default=0.0, min=0.0, step=0.01, tooltip=FRAME_DURATION_PRIORITY_TOOLTIP),
+            ],
+            outputs=[
+                io.Custom(PRECUT_VIDEO_INFO_TYPE).Output(display_name="media specs IN"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, fps=0.0, width=0, height=0, frames=0, duration=0.0) -> io.NodeOutput:
+        return io.NodeOutput(PRECUTMediaSpecsIn().make_video_info(fps, width, height, frames, duration)[0])
+
+
 class PRECUTExtension(ComfyExtension):
     async def get_node_list(self):
-        return [PRECUTV2, PRECUTVideoInfoV2]
+        return [PRECUTV2, PRECUTVideoInfoV2, PRECUTMediaSpecsInV2]
 
 
 async def comfy_entrypoint() -> PRECUTExtension:

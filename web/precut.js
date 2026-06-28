@@ -1462,7 +1462,7 @@ function isMediaSpecsNode(node) {
     node?.constructor?.comfyClass,
     node?.constructor?.type,
   ];
-  return names.includes("PRECUTVideoInfo") || names.includes("PRECUT Media Specs");
+  return names.includes("PRECUTVideoInfo") || names.includes("PRECUT Media Specs OUT");
 }
 
 function applyMediaSpecsSizeLimits(target) {
@@ -1794,7 +1794,7 @@ app.registerExtension({
     );
     const loadInputsBtn = makeButton(
       "load-inputs precut-load",
-      "Load from connected VIDEO or AUDIO input. Connect only one media input at a time",
+      "Load from connected VIDEO, AUDIO, or media specs IN input. Connect only one media input at a time",
       `${icons.inputArrow}<span>LOAD FROM INPUTS</span>`,
       () => loadFromInputs()
     );
@@ -3011,10 +3011,17 @@ app.registerExtension({
       zoomCenter = Math.max(0, Math.min(1, (start + visible / 2) / total));
     }
 
+    function panVisibleRangeTo(start, visible = visibleRange()[1] - visibleRange()[0]) {
+      const total = timelineTotalSpan();
+      const safeVisible = Math.max(minimumVisibleSpan(total), Math.min(total, Number(visible) || total));
+      const safeStart = Math.max(0, Math.min(Math.max(0, total - safeVisible), start));
+      zoomCenter = Math.max(0, Math.min(1, (safeStart + safeVisible / 2) / total));
+    }
+
     function panVisibleRangeByFrames(delta) {
       const [start, end] = visibleRange();
       const visible = end - start;
-      setVisibleRange(start + delta, start + delta + visible);
+      panVisibleRangeTo(start + delta, visible);
       markWaveformDirty();
       scheduleRender();
     }
@@ -3041,7 +3048,7 @@ app.registerExtension({
         pixels = event.clientX - (rect.right - edgeSize);
       }
       if (!pixels) return;
-      setVisibleRange(start + pixels * framesPerPixel, end + pixels * framesPerPixel);
+      panVisibleRangeTo(start + pixels * framesPerPixel, visible);
       markWaveformDirty();
     }
 
@@ -3058,10 +3065,10 @@ app.registerExtension({
       const visible = end - start;
       const head = currentFrame();
       if (head > end) {
-        setVisibleRange(head, head + visible);
+        panVisibleRangeTo(head - visible, visible);
         markWaveformDirty();
       } else if (head < start) {
-        setVisibleRange(head - visible, head);
+        panVisibleRangeTo(head, visible);
         markWaveformDirty();
       }
     }
@@ -3650,16 +3657,126 @@ app.registerExtension({
     }
 
     function connectedMediaInputs() {
-      const connected = { video: null, audio: null };
+      const connected = { video: null, audio: null, mediaSpecs: null };
       for (const input of node.inputs || []) {
         const name = (input.name || "").toLowerCase();
-        if (!["audio", "video"].includes(name)) continue;
+        const normalizedName = name.replace(/[\s-]+/g, "_");
+        let key = null;
+        if (normalizedName === "audio") key = "audio";
+        if (normalizedName === "video") key = "video";
+        if (normalizedName === "media_specs_in" || name === "media specs in") key = "mediaSpecs";
+        if (!key) continue;
         const link = app.graph?.links?.[input.link];
         if (!link) continue;
         const sourceNode = app.graph.getNodeById(link.origin_id);
-        if (sourceNode) connected[name] = sourceNode;
+        if (sourceNode) connected[key] = sourceNode;
       }
       return connected;
+    }
+
+    function numericValueFromNode(sourceNode, outputSlot = -1) {
+      const output = outputSlot >= 0 ? sourceNode?.outputs?.[outputSlot] : null;
+      const labelMatch = String(output?.label || "").match(/[-+]?\d+(?:\.\d+)?/);
+      if (labelMatch) return Number(labelMatch[0]);
+      for (const widget of sourceNode?.widgets || []) {
+        const value = Number(widget.value);
+        if (Number.isFinite(value)) return value;
+      }
+      for (const value of sourceNode?.widgets_values || []) {
+        const number = Number(value);
+        if (Number.isFinite(number)) return number;
+      }
+      return undefined;
+    }
+
+    function widgetValueByName(sourceNode, names = [], index = -1) {
+      const wanted = names.map((name) => String(name).toLowerCase());
+      for (let inputIndex = 0; inputIndex < (sourceNode?.inputs?.length || 0); inputIndex++) {
+        const input = sourceNode.inputs[inputIndex];
+        const name = String(input?.name || input?.label || "").toLowerCase();
+        if (!wanted.includes(name)) continue;
+        const link = app.graph?.links?.[input.link];
+        if (!link) break;
+        const upstreamNode = app.graph.getNodeById(link.origin_id);
+        const linkedValue = numericValueFromNode(upstreamNode, link.origin_slot);
+        if (Number.isFinite(Number(linkedValue))) return linkedValue;
+        break;
+      }
+      for (const widget of sourceNode?.widgets || []) {
+        const name = String(widget.name || widget.label || "").toLowerCase();
+        if (wanted.includes(name)) return widget.value;
+      }
+      if (Array.isArray(sourceNode?.widgets_values) && index >= 0) {
+        return sourceNode.widgets_values[index];
+      }
+      return undefined;
+    }
+
+    function connectedMediaSpecs(connected = connectedMediaInputs()) {
+      const sourceNode = connected.mediaSpecs;
+      if (!sourceNode) return null;
+      const specs = {
+        fps: Number(widgetValueByName(sourceNode, ["fps"], 0)),
+        width: Number(widgetValueByName(sourceNode, ["width"], 1)),
+        height: Number(widgetValueByName(sourceNode, ["height"], 2)),
+        frames: Number(widgetValueByName(sourceNode, ["frames", "length"], 3)),
+        duration: Number(widgetValueByName(sourceNode, ["duration"], 4)),
+      };
+      const hasValue = Object.values(specs).some((value) => Number.isFinite(value) && value > 0);
+      return hasValue ? specs : null;
+    }
+
+    function applySpecsCrop(specs) {
+      const width = Math.round(Number(specs?.width) || 0);
+      const height = Math.round(Number(specs?.height) || 0);
+      const sourceWidth = Math.round(state.media_width || video.videoWidth || 0);
+      const sourceHeight = Math.round(state.media_height || video.videoHeight || 0);
+      if (width <= 0 || height <= 0 || sourceWidth <= 0 || sourceHeight <= 0 || state.media_type === "audio") return false;
+      const cropWidth = Math.max(1, Math.min(sourceWidth, width));
+      const cropHeight = Math.max(1, Math.min(sourceHeight, height));
+      const crop = {
+        x: Math.round((sourceWidth - cropWidth) / 2),
+        y: Math.round((sourceHeight - cropHeight) / 2),
+        w: cropWidth,
+        h: cropHeight,
+      };
+      const edit = mediaEdit();
+      edit.scale = 1;
+      edit.rotation = 0;
+      edit.aspect = "custom";
+      edit.custom_ratio = {
+        w: Math.max(1, Math.min(99, cropWidth)),
+        h: Math.max(1, Math.min(99, cropHeight)),
+      };
+      setCropState(crop);
+      state.crop_memory = cloneEditState(edit);
+      editMode = "crop";
+      return true;
+    }
+
+    function applyConnectedMediaSpecs(specs) {
+      if (!specs) return false;
+      let changed = false;
+      if (Number.isFinite(specs.fps) && specs.fps > 0) {
+        setEffectiveFps(specs.fps, { persist: false });
+        changed = true;
+      }
+      if (applySpecsCrop(specs)) changed = true;
+      const frameCount = Math.floor(Number(specs.frames) || 0);
+      const durationSeconds = Number(specs.duration);
+      if (frameCount > 0) {
+        state.out_frame = Math.max(state.in_frame, Math.min(state.frame_count - 1, state.in_frame + frameCount - 1));
+        changed = true;
+      } else if (Number.isFinite(durationSeconds) && durationSeconds > 0) {
+        const durationFrames = Math.max(1, Math.round(durationSeconds * validFps(state.fps, 24)));
+        state.out_frame = Math.max(state.in_frame, Math.min(state.frame_count - 1, state.in_frame + durationFrames - 1));
+        changed = true;
+      }
+      if (changed) {
+        frameCountInput.value = String(selectedFrameCount());
+        persist();
+      }
+      return changed;
     }
 
     async function registerVideoPath(path) {
@@ -3677,11 +3794,24 @@ app.registerExtension({
       root.classList.remove("loaded");
       setProgress(20, true);
       const connected = connectedMediaInputs();
+      const specs = connectedMediaSpecs(connected);
       const sourceNodes = [connected.video, connected.audio].filter(Boolean);
       const videoPath = sourceNodes.map(videoPathFromNode).find(Boolean);
       try {
-        if (!sourceNodes.length) {
-          throw new Error("Connect a VIDEO or AUDIO input before using LOAD MEDIA INPUTS.");
+        if (!sourceNodes.length && !specs) {
+          throw new Error("Connect a VIDEO, AUDIO, or media specs IN input before using LOAD FROM INPUTS.");
+        }
+        if (!sourceNodes.length && specs) {
+          if (!hasLoadedMedia()) {
+            throw new Error("Load media first, then use LOAD FROM INPUTS to apply connected media specs.");
+          }
+          applyConnectedMediaSpecs(specs);
+          setProgress(100, true);
+          setTimeout(() => setProgress(100, false), 650);
+          root.classList.add("loaded");
+          setTimeout(() => root.classList.remove("loaded"), 1800);
+          render();
+          return;
         }
         if (connected.video && connected.audio) {
           throw new Error("Connect either VIDEO or AUDIO to PRECUT, not both, before using LOAD MEDIA INPUTS.");
@@ -3710,6 +3840,7 @@ app.registerExtension({
           if (mediaType === "audio") {
             setPlaceholder(`Audio loaded: ${result.name}`, "audio");
           }
+          applyConnectedMediaSpecs(specs);
           hydrateVideo();
           await loadWaveform();
           setProgress(100, true);
@@ -3744,6 +3875,7 @@ app.registerExtension({
           state.in_frame = 0;
           state.out_frame = state.frame_count - 1;
         }
+        applyConnectedMediaSpecs(specs);
         setWaveformPeaks([]);
         setPlaceholder(
           "Connected media inputs selected. Audio-only inputs will trim on workflow run.",
@@ -4503,7 +4635,7 @@ app.registerExtension({
         const rect = timeline.getBoundingClientRect();
         const framesPerPixel = (timelinePan.end - timelinePan.start) / Math.max(1, rect.width);
         const delta = (event.clientX - timelinePan.clientX) * framesPerPixel;
-        setVisibleRange(timelinePan.start - delta, timelinePan.end - delta);
+        panVisibleRangeTo(timelinePan.start - delta, timelinePan.end - timelinePan.start);
         markWaveformDirty();
         timeline.style.cursor = "grabbing";
         scheduleRender();

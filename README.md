@@ -2,13 +2,13 @@
 
 PRECUT is a ComfyUI custom node pack for media editing utilities.
 
-The first node in the pack is **Media Cutter**: a visual video/audio trimmer with an interactive timeline, waveform, IN/OUT markers, playback controls, and separate `VIDEO`, `AUDIO`, and `DURATION` outputs.
+The main node is **PRECUT**: a visual video/audio trimmer with an interactive timeline, waveform, IN/OUT markers, playback controls, and separate `VIDEO`, `AUDIO`, and `DURATION` outputs.
 
-## Media Cutter
+## PRECUT
 
 ### Video / Audio
 
-![Media Cutter video and audio](docs/images/media-cutter-video.png)
+![PRECUT video and audio](docs/images/media-cutter-video.png)
 
 ## What It Does
 
@@ -19,7 +19,7 @@ The first node in the pack is **Media Cutter**: a visual video/audio trimmer wit
 - Trims connected `AUDIO` inputs and returns the selected audio range.
 - Trims loaded media files and returns `VIDEO`, `AUDIO`, and the selected duration in seconds.
 - Supports resizing the node and timeline without pushing the controls out of place.
-- Keeps the node display name as **Media Cutter** under the `PRECUT` category.
+- The node is named **PRECUT** under the `PRECUT` category.
 
 ## Inputs
 
@@ -57,7 +57,7 @@ Connect either `video` or `audio`, not both, when using connected media inputs.
 4. In ComfyUI, right-click the graph and add:
 
    ```text
-   PRECUT > Media Cutter
+   PRECUT > PRECUT
    ```
 
 ### Install Without Git
@@ -97,6 +97,5 @@ Connect either `video` or `audio`, not both, when using connected media inputs.
 
 ## Notes
 
-- The internal legacy node id remains `PRECUT` for workflow compatibility, but the node is displayed as **Media Cutter**.
 - FFmpeg is required for media probing, waveform generation, and audio extraction. PRECUT uses `imageio-ffmpeg`, PATH FFmpeg, or `PRECUT_FFMPEG_PATH` / `VHS_FORCE_FFMPEG_PATH` when available.
 - Uploaded and registered media files are resolved through ComfyUI's input directory.

@@ -24,3 +24,7 @@ git clone https://github.com/younestft/PRECUT.git
 Restart ComfyUI, then find the nodes in the **PRECUT** category.
 
 FFmpeg is required. PRECUT can use `imageio-ffmpeg`, FFmpeg on your system PATH, or a configured `PRECUT_FFMPEG_PATH` / `VHS_FORCE_FFMPEG_PATH`.
+
+## License
+
+PRECUT is licensed under the [GNU General Public License v3.0](LICENSE).
